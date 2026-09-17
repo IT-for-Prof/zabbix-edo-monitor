@@ -1,0 +1,29 @@
+# Deny by default, allow by exception: a new file stays out of git until it is allowed here.
+# Each allowed directory needs its own "exclude everything, then allow" pair.
+
+# --- repository root
+/*
+!/.gitignore
+!/.gitattributes
+!/LICENSE
+!/README.md
+!/CHANGELOG.md
+!/agent/
+!/template/
+!/tests/
+
+# --- probe and agent config
+/agent/*
+!/agent/edo.ps1
+!/agent/edo-monitor.conf
+
+# --- Zabbix template export
+/template/*
+!/template/*.yaml
+
+# --- Pester tests and helpers
+/tests/*
+!/tests/*.Tests.ps1
+!/tests/Helpers/
+/tests/Helpers/*
+!/tests/Helpers/*.psm1

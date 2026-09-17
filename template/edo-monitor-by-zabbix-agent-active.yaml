@@ -1,0 +1,586 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 083a756bf2ca43a2928f1fa1fbae3eda
+      name: Templates/Custom
+  templates:
+    - uuid: c31bb7be861b4847b7bc5d2149f509a8
+      template: 'EDO Monitor by Zabbix agent active'
+      name: 'EDO Monitor by Zabbix agent active'
+      description: |
+        Доступность сервисов ЭДО (Контур, Госуслуги, ФНС с ГОСТ-кабинетами, Такском, Честный знак) с рабочего места пользователя и класс отказа: на каком шаге DNS → TCP → TLS → HTTP ломается соединение.
+
+        Цели задаются макросами {$EDO.TARGETS.*}: запись «Имя|mode|host|port|path», записи разделены «;». Смена адресов — правка макроса на шаблоне, группе или хосте, без импорта шаблона и раскатки скрипта; обнаружение подхватывает её в течение часа.
+
+        Зависимости: доступность агента («Windows by Zabbix agent active») → «проба не работает на хосте» → «массовый отказ с хоста» → триггеры отдельных целей. Когда отказ общий для хоста, приходит одна проблема, а не по одной на цель.
+
+        Требования: Zabbix 7.0+, agent 2; edo.ps1 и edo-monitor.conf на хосте; «Windows by Zabbix agent active» на том же хосте; КриптоПро CSP — только для ГОСТ-целей.
+
+        Author:  Konstantin Tyutyunnik / Константин Тютюнник
+        Site:    https://itforprof.com
+        Repo:    https://github.com/IT-for-Prof/zabbix-edo-monitor
+      vendor:
+        name: itforprof.com
+        version: 1.3.0
+      groups:
+        - name: Templates/Custom
+      items:
+        - uuid: 5d1047b1f8f64b9caeb9012e31025833
+          name: 'EDO: такт обнаружения целей'
+          type: ZABBIX_ACTIVE
+          key: 'system.localtime[utc]'
+          delay: 1h
+          history: '0'
+          trends: '0'
+          description: 'Мастер правила обнаружения целей: раз в час запускает разбор {$EDO.TARGETS.*}. Макросы целей подставляет шаг «Регулярное выражение», а не JavaScript: Zabbix до 7.0.9 и 7.2.3 кеширует скрипт вместе с подставленными макросами и не видит их правку (ZBX-25568). Не agent.version и не system.localtime без параметра: эти ключи есть в «Windows by Zabbix agent active».'
+          tags:
+            - tag: component
+              value: discovery
+        - uuid: 41a17d17e8a34edf80394446468dd56e
+          name: 'EDO: MD5 скрипта пробы'
+          type: ZABBIX_ACTIVE
+          key: 'vfs.file.md5sum["C:\Program Files\Zabbix Agent 2\scripts\edo.ps1"]'
+          delay: 1h
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          description: 'Хеш раскатанного edo.ps1. Сравнивается с {$EDO.SCRIPT.MD5}: отстающие хосты видны без запуска PowerShell. Значение хранится каждый час, без отбрасывания повторов: триггер пересчитывается только на новом значении, и правка {$EDO.SCRIPT.MD5} иначе доходила бы до суток.'
+          tags:
+            - tag: component
+              value: probe
+          triggers:
+            - uuid: 0cc23e38fbc7456e855c28c766091549
+              expression: 'last(/EDO Monitor by Zabbix agent active/vfs.file.md5sum["C:\Program Files\Zabbix Agent 2\scripts\edo.ps1"])<>"{$EDO.SCRIPT.MD5}"'
+              name: 'EDO: версия скрипта пробы не совпадает'
+              event_name: 'EDO: на {HOST.NAME} не та версия edo.ps1'
+              opdata: 'MD5: {ITEM.LASTVALUE1}'
+              priority: AVERAGE
+              description: |
+                MD5 файла edo.ps1 на хосте отличается от {$EDO.SCRIPT.MD5}: на хосте старая или изменённая вручную проба.
+
+                Что делать: раскатать edo.ps1 из репозитория (README, «Установка»). Если скрипт обновлён намеренно — записать его MD5 в {$EDO.SCRIPT.MD5} на шаблоне.
+              manual_close: 'YES'
+              dependencies:
+                - name: 'Windows: Active checks are not available'
+                  expression: 'min(/Windows by Zabbix agent active/zabbix[host,active_agent,available],{$AGENT.TIMEOUT})=2'
+                - name: 'Windows: Zabbix agent is not available'
+                  expression: 'nodata(/Windows by Zabbix agent active/agent.ping,{$AGENT.NODATA_TIMEOUT})=1'
+              tags:
+                - tag: scope
+                  value: configuration
+        - uuid: c503db33eacc47beaf5bbc521dd021c3
+          name: 'EDO: целей с классом 90–91'
+          type: CALCULATED
+          key: edo.targets.broken
+          delay: 1m
+          history: 7d
+          params: 'count(last_foreach(//edo.class[*,*,*,*]),"ge",90)'
+          description: 'Цели хоста, чей последний класс 90–91: проверка на хосте невозможна. Четыре звёздочки в ключе обязательны: одна «*» подставляется ровно за один параметр, и edo.class[*] не находит ни одной цели.'
+          tags:
+            - tag: component
+              value: summary
+        - uuid: 1f64da1616ff4246bbe5aca215a269c6
+          name: 'EDO: недоступных целей'
+          type: CALCULATED
+          key: edo.targets.failing
+          delay: 1m
+          history: 7d
+          params: 'count(last_foreach(//edo.class[*,*,*,*]),"ge",10)-count(last_foreach(//edo.class[*,*,*,*]),"ge",90)'
+          description: 'Цели хоста, чей последний класс 10–50: сетевой или сервисный отказ. Основа триггера «массовый отказ с хоста».'
+          tags:
+            - tag: component
+              value: summary
+        - uuid: 2f621948b71b456b9362a549be902198
+          name: 'EDO: целей с данными за {$EDO.NODATA.HOST}'
+          type: CALCULATED
+          key: edo.targets.reporting
+          delay: 1m
+          history: 7d
+          params: 'count(last_foreach(//edo.class[*,*,*,*],{$EDO.NODATA.HOST}))'
+          description: 'Цели, приславшие класс за окно {$EDO.NODATA.HOST}; неподдерживаемые элементы не считаются. Ноль при ненулевом числе целей — проба молчит на всём хосте.'
+          tags:
+            - tag: component
+              value: summary
+        - uuid: eab47254d13c4728be22124e6fbeb8ac
+          name: 'EDO: целей на хосте'
+          type: CALCULATED
+          key: edo.targets.total
+          delay: 1m
+          history: 7d
+          params: 'sum(exists_foreach(//edo.class[*,*,*,*]))'
+          description: 'Включённые цели хоста, в том числе неподдерживаемые и ещё без данных. Через exists_foreach: last_foreach пропускает неподдерживаемые элементы и при пропаже пробы с хоста дал бы 0.'
+          tags:
+            - tag: component
+              value: summary
+      discovery_rules:
+        - uuid: b2ede4b291b248b8bfb911d1339604fc
+          name: 'EDO: обнаружение целей'
+          type: DEPENDENT
+          key: edo.targets.discovery
+          delay: '0'
+          lifetime_type: DELETE_AFTER
+          lifetime: 7d
+          enabled_lifetime_type: DISABLE_IMMEDIATELY
+          description: 'Разбирает макросы {$EDO.TARGETS.*} в список целей без запуска PowerShell. Неверная запись не теряется: она становится целью с режимом invalid, проба отвечает классом 91.'
+          item_prototypes:
+            - uuid: e3607178f4cd4050bcf461de0cceb69a
+              name: 'EDO {#NAME}: ответ пробы'
+              type: ZABBIX_ACTIVE
+              key: 'edo.probe[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              delay: '{$EDO.INTERVAL:"{#MODE}"}'
+              history: 7d
+              value_type: TEXT
+              timeout: '{$EDO.TIMEOUT}'
+              description: 'JSON пробы edo.ps1 для {#MODE}://{#HOST}:{#PORT}{#PATH}: класс, IP, тайминги фаз, версия TLS, сертификат, HTTP-код, ошибка.'
+              tags:
+                - tag: component
+                  value: probe
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: mode
+                  value: '{#MODE}'
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: 617912750c8e46c2a0d1b24ba0987c3b
+              name: 'EDO {#NAME}: класс отказа'
+              type: DEPENDENT
+              key: 'edo.class[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              delay: '0'
+              history: 30d
+              description: '0 — доступен; 10–50 — сетевой или сервисный отказ; 90–91 — проверка на этом хосте невозможна. Нечитаемый ответ пробы (не JSON) превращается в 91 сразу, без ожидания nodata.'
+              valuemap:
+                name: 'EDO probe class'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.class
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '91'
+              master_item:
+                key: 'edo.probe[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              tags:
+                - tag: component
+                  value: availability
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: mode
+                  value: '{#MODE}'
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: e88d1852810f4203810f5228d7fa4afe
+              name: 'EDO {#NAME}: полное время проверки'
+              type: DEPENDENT
+              key: 'edo.total_ms[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              delay: '0'
+              history: 30d
+              value_type: FLOAT
+              units: ms
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.total_ms
+              master_item:
+                key: 'edo.probe[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              tags:
+                - tag: component
+                  value: performance
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: mode
+                  value: '{#MODE}'
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: 5444152ebe834199b589452e7b42949d
+              name: 'EDO {#NAME}: дней до окончания сертификата'
+              type: DEPENDENT
+              key: 'edo.cert_days[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              delay: '0'
+              history: 30d
+              value_type: FLOAT
+              description: '-1 — сертификат не получен (HTTP без TLS, ГОСТ-проверка или отказ до TLS).'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.cert_days
+              master_item:
+                key: 'edo.probe[{#MODE},{#HOST},{#PORT},{#PATH}]'
+              tags:
+                - tag: component
+                  value: tls
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: mode
+                  value: '{#MODE}'
+                - tag: service
+                  value: '{#NAME}'
+          trigger_prototypes:
+            - uuid: 8145a5350c5a4ae8ad4a83e32ca7212b
+              expression: 'changecount(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.UNSTABLE.PERIOD:"{#MODE}"})>={$EDO.UNSTABLE.CHANGES} and min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})=0'
+              name: 'EDO {#NAME}: нестабилен'
+              event_name: 'EDO {#NAME} ({#HOST}) нестабилен с {HOST.NAME}'
+              opdata: 'Класс: {ITEM.LASTVALUE1}'
+              url_name: 'Последние данные цели'
+              url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
+              priority: WARNING
+              description: |
+                Только для дашборда. За период {$EDO.UNSTABLE.PERIOD:"{#MODE}"} класс сменился не меньше {$EDO.UNSTABLE.CHANGES} раз, а среди последних проверок {$EDO.FAIL.PERIOD} есть успешная: отказы перемежаются успехами. «Недоступен» такое не видит — ему нужны отказы подряд. Четыре смены — это два отдельных отказа; одиночный сбой и сплошной отказ с восстановлением дают по две.
+
+                Что делать: посмотреть в истории «ответ пробы» поля class и ip у отказов. Отказы на одном и том же адресе из нескольких — балансировка отдаёт адрес, который не покрыт правилом брандмауэра (класс 23, AccessDenied) или недоступен по маршруту.
+              manual_close: 'YES'
+              dependencies:
+                - name: 'EDO {#NAME}: нет данных пробы'
+                  expression: 'nodata(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.NODATA:"{#MODE}"})=1'
+                - name: 'EDO {#NAME}: проверка невозможна'
+                  expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],#2)>=90'
+              tags:
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: scope
+                  value: availability
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: 388cf6bda52b428396525ad7dd36d2b5
+              expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})>0 and max(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})<90'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}])=0'
+              name: 'EDO {#NAME}: недоступен несколько проверок подряд'
+              event_name: 'EDO {#NAME} ({#HOST}) недоступен с {HOST.NAME}: {ITEM.LASTVALUE1}'
+              opdata: 'Класс: {ITEM.LASTVALUE1}'
+              url_name: 'Последние данные цели'
+              url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
+              priority: HIGH
+              description: |
+                Все проверки за период {$EDO.FAIL.PERIOD} закончились сетевым или сервисным отказом. Закрывается только успешной проверкой (класс 0): класс 90–91 или пропуск данных посреди отказа проблему не закрывают. У новой цели, пока проверок меньше, чем в периоде, триггер считает по тем, что есть. Если отказ общий для хоста, вместо этого триггера поднимается «массовый отказ с хоста».
+
+                Что делать по классу (поле error — в истории «ответ пробы»):
+                - 10 DNS_FAIL — проверить DNS хоста (Resolve-DnsName <host> от имени сервера); имя цели могло смениться;
+                - 20 TCP_TIMEOUT, 22 TCP_REFUSED — сервис лежит или соединение режут; сравнить с другими хостами и со статусом сервиса;
+                - 23 TCP_FAIL — чаще всего локальный запрет: AccessDenied значит, что адрес не покрыт разрешающим правилом исходящего брандмауэра;
+                - 30 TLS_TIMEOUT, 31 TLS_RESET — типичные подписи блокировки ТСПУ, особенно если 31 массово;
+                - 32 TLS_FAIL — рукопожатие не состоялось: на Server 2019 проверить TLS 1.2 и наборы шифров; для gost — сервер не принял ГОСТ ClientHello (версия КриптоПро, ErrorCode в error);
+                - 33 CERT_UNTRUSTED — цепочка не доверена: нет корня НУЦ Минцифры на хосте (обновить корневые сертификаты) или TLS подменяет антивирус или прокси (исключение для адреса цели);
+                - 40 HTTP_BAD, 42 HTTP_TIMEOUT — соединение есть, сервис отвечает ошибкой 5xx или молчит;
+                - 50 STALL — обрыв при передаче большого тела: подпись DPI.
+              manual_close: 'YES'
+              dependencies:
+                - name: 'EDO: массовый отказ с хоста'
+                  expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
+                - name: 'EDO {#NAME}: нет данных пробы'
+                  expression: 'nodata(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.NODATA:"{#MODE}"})=1'
+                - name: 'EDO {#NAME}: проверка невозможна'
+                  expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],#2)>=90'
+              tags:
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: scope
+                  value: availability
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: eca15f55de544defa2730c26b2ade029
+              expression: 'nodata(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.NODATA:"{#MODE}"})=1'
+              name: 'EDO {#NAME}: нет данных пробы'
+              event_name: 'EDO {#NAME} ({#HOST}): нет данных пробы на {HOST.NAME}'
+              opdata: 'Нет данных дольше {$EDO.NODATA:"{#MODE}"}'
+              url_name: 'Последние данные цели'
+              url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
+              priority: AVERAGE
+              description: |
+                Проба не присылает класс по этой цели дольше {$EDO.NODATA:"{#MODE}"}. О доступности сервиса это ничего не говорит. Если молчат все цели хоста, вместо этого триггера поднимается «проба не работает на хосте».
+
+                Что делать: элемент «ответ пробы» этой цели не поддерживается или не опрашивается — текст ошибки в его свойствах. Чаще всего превышен {$EDO.TIMEOUT}: проба до цели не укладывается в таймаут элемента.
+              manual_close: 'YES'
+              dependencies:
+                - name: 'EDO: проба не работает на хосте'
+                  expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.reporting)=0 or (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+                  recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)=0 or (min(/EDO Monitor by Zabbix agent active/edo.targets.reporting,{$EDO.INTERVAL})>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.MIN} or 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+              tags:
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: scope
+                  value: data-collection
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: b4f91f3933a348fcb44d345d79dfe134
+              expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],#2)>=90'
+              name: 'EDO {#NAME}: проверка невозможна'
+              event_name: 'EDO {#NAME} ({#HOST}): проверка невозможна на {HOST.NAME}: {ITEM.LASTVALUE1}'
+              opdata: 'Класс: {ITEM.LASTVALUE1}'
+              url_name: 'Последние данные цели'
+              url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
+              priority: AVERAGE
+              description: |
+                Две проверки подряд проба сама отвечает, что проверить цель на этом хосте нельзя (класс 90–91). О доступности сервиса это ничего не говорит. Вторая проверка даёт сводке хоста время поднять «проба не работает на хосте» раньше триггеров целей.
+
+                Что делать:
+                - 90 GOST_NO_CSP — на хосте нет КриптоПро CSP: поставить или очистить {$EDO.TARGETS.FNS.GOST} на хосте;
+                - 91 PROBE_ERROR — неверная запись в макросе целей (имя элемента начинается с «Неверная запись») или нечитаемый ответ пробы: поле error в истории «ответ пробы».
+              manual_close: 'YES'
+              dependencies:
+                - name: 'EDO: проба не работает на хосте'
+                  expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.reporting)=0 or (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+                  recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)=0 or (min(/EDO Monitor by Zabbix agent active/edo.targets.reporting,{$EDO.INTERVAL})>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.MIN} or 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+              tags:
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: scope
+                  value: configuration
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: 6313ca38fcc64d56b2e421ef3af7f3a5
+              expression: 'min(/EDO Monitor by Zabbix agent active/edo.total_ms[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})>{$EDO.SLOW.MS:"{#HOST}"} and max(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})=0'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.total_ms[{#MODE},{#HOST},{#PORT},{#PATH}])<={$EDO.SLOW.MS:"{#HOST}"} and last(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}])=0'
+              name: 'EDO {#NAME}: медленный ответ'
+              event_name: 'EDO {#NAME} ({#HOST}) отвечает медленно с {HOST.NAME}: {ITEM.LASTVALUE1}'
+              opdata: 'Время: {ITEM.LASTVALUE1}'
+              url_name: 'Последние данные цели'
+              url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
+              priority: WARNING
+              description: |
+                Только для дашборда. Все успешные проверки за период {$EDO.FAIL.PERIOD} длились дольше {$EDO.SLOW.MS:"{#HOST}"} мс. Закрывается только быстрой успешной проверкой: отказ посреди медленной работы проблему не закрывает.
+
+                Что делать: сравнить фазы dns_ms/tcp_ms/tls_ms/http_ms в истории «ответ пробы»; свой порог для цели — {$EDO.SLOW.MS:"{#HOST}"}.
+              manual_close: 'YES'
+              dependencies:
+                - name: 'EDO {#NAME}: нет данных пробы'
+                  expression: 'nodata(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.NODATA:"{#MODE}"})=1'
+                - name: 'EDO {#NAME}: проверка невозможна'
+                  expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],#2)>=90'
+              tags:
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: scope
+                  value: performance
+                - tag: service
+                  value: '{#NAME}'
+            - uuid: c6dfd0e647d0425a933f6014fe873174
+              expression: 'last(/EDO Monitor by Zabbix agent active/edo.cert_days[{#MODE},{#HOST},{#PORT},{#PATH}])>=0 and last(/EDO Monitor by Zabbix agent active/edo.cert_days[{#MODE},{#HOST},{#PORT},{#PATH}])<{$EDO.CERT.DAYS:"{#HOST}"}'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.cert_days[{#MODE},{#HOST},{#PORT},{#PATH}])>={$EDO.CERT.DAYS:"{#HOST}"}'
+              name: 'EDO {#NAME}: сертификат сервера истекает'
+              event_name: 'EDO {#NAME} ({#HOST}): сертификат истекает через {ITEM.LASTVALUE1} дн.'
+              opdata: 'Дней: {ITEM.LASTVALUE1}'
+              url_name: 'Последние данные цели'
+              url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
+              priority: WARNING
+              description: |
+                Только для дашборда. Сертификат сервера цели истекает раньше, чем через {$EDO.CERT.DAYS:"{#HOST}"} дней. Сертификат чужой, повлиять на него нельзя. Закрывается только новым сертификатом: значение -1 (сертификат не получен из-за отказа до TLS) проблему не поднимает и не закрывает. Если издатель в поле cert_issuer истории «ответ пробы» не похож на издателя сервиса, TLS подменяет антивирус или прокси; при этом учитывать, что издатель зависит от маршрута (Госуслуги через российский маршрут — Минцифры России).
+
+                Что делать: ничего, если цель — внешний сервис; предупредить пользователей, если после даты окончания сервис станет недоступен.
+              manual_close: 'YES'
+              dependencies:
+                - name: 'EDO {#NAME}: нет данных пробы'
+                  expression: 'nodata(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.NODATA:"{#MODE}"})=1'
+                - name: 'EDO {#NAME}: проверка невозможна'
+                  expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],#2)>=90'
+              tags:
+                - tag: endpoint
+                  value: '{#HOST}'
+                - tag: scope
+                  value: tls
+                - tag: service
+                  value: '{#NAME}'
+          master_item:
+            key: 'system.localtime[utc]'
+          preprocessing:
+            - type: REGEX
+              parameters:
+                - '^(.*)$'
+                - '{$EDO.TARGETS.KONTUR}`{$EDO.TARGETS.STALL}`{$EDO.TARGETS.GOSUSLUGI}`{$EDO.TARGETS.FNS}`{$EDO.TARGETS.FNS.GOST}`{$EDO.TARGETS.TAXCOM}`{$EDO.TARGETS.CRPT}`{$EDO.TARGETS.EXTRA}'
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // Targets arrive as the value: the previous regex step outputs the target macros joined by a backtick.
+                  // No macro may appear in this script: Zabbix before 7.0.9 / 7.2.3 caches the compiled script with
+                  // macros already substituted and ignores later macro edits (ZBX-25568).
+                  // Fields are checked with the same patterns as Test-EdoArgs in edo.ps1: a bad
+                  // entry becomes a safe "invalid" target, so the probe answers class 91 instead
+                  // of agent2 rejecting the key and the entry silently disappearing.
+                  var sources = value.split('`');
+                  var modePattern = /^(http|stall|gost)$/;
+                  var hostPattern = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+                  var portPattern = /^[0-9]{1,5}$/;
+                  var pathPattern = /^\/[A-Za-z0-9._\/-]*$/;
+                  function trim(s) { return s.replace(/^\s+|\s+$/g, ''); }
+                  // Item names and tag values are limited to 255 characters: a longer name would make the target silently fail to be created.
+                  function clip(s, n) { return s.length > n ? s.substr(0, n) + '...' : s; }
+                  var rows = [], seen = {}, invalid = 0;
+                  for (var s = 0; s < sources.length; s++) {
+                      var entries = sources[s].split(';');
+                      for (var e = 0; e < entries.length; e++) {
+                          var text = trim(entries[e]);
+                          if (text === '') continue;
+                          var f = text.split('|');
+                          for (var i = 0; i < f.length; i++) f[i] = trim(f[i]);
+                          var ok = f.length === 5 && f[0] !== '' && modePattern.test(f[1]) && hostPattern.test(f[2])
+                              && portPattern.test(f[3]) && +f[3] >= 1 && +f[3] <= 65535 && pathPattern.test(f[4]);
+                          var row = ok
+                              ? { '{#NAME}': clip(f[0], 100), '{#MODE}': f[1], '{#HOST}': f[2].toLowerCase(), '{#PORT}': f[3], '{#PATH}': f[4] }
+                              : { '{#NAME}': 'Неверная запись: ' + clip(text, 80), '{#MODE}': 'invalid', '{#HOST}': 'invalid-' + (++invalid), '{#PORT}': '0', '{#PATH}': '/' };
+                          var id = row['{#MODE}'] + '|' + row['{#HOST}'] + '|' + row['{#PORT}'] + '|' + row['{#PATH}'];
+                          if (seen[id]) continue;
+                          seen[id] = true;
+                          rows.push(row);
+                      }
+                  }
+                  // An empty list would disable every target at once (DISABLE_IMMEDIATELY) and delete them in 7 days;
+                  // a thrown error keeps the last discovered set until the macros are fixed.
+                  if (rows.length === 0) throw 'EDO: every EDO.TARGETS macro is empty on this host - keeping previously discovered targets';
+                  return JSON.stringify(rows);
+      tags:
+        - tag: class
+          value: service
+        - tag: target
+          value: edo
+        - tag: vendor
+          value: itforprof
+      macros:
+        - macro: '{$EDO.CERT.DAYS}'
+          value: '14'
+          description: 'Порог Warning «сертификат истекает», дней. Для одной цели — контекст по host: {$EDO.CERT.DAYS:"host"}.'
+        - macro: '{$EDO.FAIL.PERIOD}'
+          value: '#3'
+          description: 'Период для High «недоступен», Warning «медленно» и «нестабилен» в формате Zabbix: #3 — последние три проверки. Целиком макрос, а не #{$MACRO}: Zabbix 7.0 не принимает макрос внутри счётчика функции.'
+        - macro: '{$EDO.INTERVAL}'
+          value: 5m
+          description: 'Интервал проверки цели. Для режима — контекст: {$EDO.INTERVAL:"stall"}.'
+        - macro: '{$EDO.INTERVAL:"stall"}'
+          value: 1h
+          description: 'Интервал большого POST: редко, чтобы не нагружать чужой сервер со всех хостов.'
+        - macro: '{$EDO.MASS.MIN}'
+          value: '3'
+          description: 'Минимум целей для хостовых триггеров «массовый отказ» и «проба не работает на хосте»: на хосте с одной-двумя целями отказ цели не превращается в отказ хоста.'
+        - macro: '{$EDO.MASS.PCT}'
+          value: '50'
+          description: 'Доля целей хоста, %, с отказом (10–50) для High «массовый отказ с хоста» или с классом 90–91 для Average «проба не работает на хосте». 50: отказ одного Контура (13 из 27 целей) остаётся отказом сервиса по целям, а пропажа сети или DNS на хосте — одна проблема.'
+        - macro: '{$EDO.NODATA}'
+          value: 35m
+          description: 'Окно без данных для Average «нет данных пробы» по цели. Больше {$EDO.INTERVAL} того же режима, больше {$AGENT.NODATA_TIMEOUT} (30m) и больше {$EDO.NODATA.HOST} с запасом на интервал: при смерти агента или пробы сначала поднимаются триггеры хоста, и зависимость гасит проверки целей.'
+        - macro: '{$EDO.NODATA.HOST}'
+          value: 20m
+          description: 'Окно, за которое ни одна цель хоста не прислала класс, для Average «проба не работает на хосте». Меньше {$EDO.NODATA} хотя бы на интервал проверки: иначе первые замолчавшие цели поднимут свои триггеры раньше хостового.'
+        - macro: '{$EDO.NODATA:"stall"}'
+          value: 3h
+          description: 'Окно без данных для режима stall; больше {$EDO.INTERVAL:"stall"}.'
+        - macro: '{$EDO.SCRIPT.MD5}'
+          value: a96dc03cdaafdda2502c2a4facc19091
+          description: 'MD5 текущей версии agent/edo.ps1 (в CRLF, как после checkout). Меняется вместе со скриптом; расхождение на хосте — Average.'
+        - macro: '{$EDO.SLOW.MS}'
+          value: '3000'
+          description: 'Порог Warning «медленный ответ», мс полного времени проверки. Для одной цели — контекст по host: {$EDO.SLOW.MS:"host"}.'
+        - macro: '{$EDO.SLOW.MS:"help.kontur.ru"}'
+          value: '8000'
+          description: 'Порог «медленно» для большого POST: 256 КБ на медленном канале законно дольше {$EDO.SLOW.MS}. Меньше бюджета фазы пробы (9 с): выгрузка дольше него уже класс 50, и порог выше был бы недостижим. В норме 1,6–1,8 с.'
+        - macro: '{$EDO.TARGETS.CRPT}'
+          value: 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак сайт|http|crpt.ru|443|/'
+          description: 'Цели Честного знака (ЦРПТ). Запись «Имя|mode|host|port|path», разделитель «;». Пусто — группа выключена.'
+        - macro: '{$EDO.TARGETS.EXTRA}'
+          description: 'Добавочные цели офиса или хоста, в том же формате. Задаётся на группе хостов или хосте.'
+        - macro: '{$EDO.TARGETS.FNS}'
+          value: 'ФНС|http|www.nalog.gov.ru|443|/;ЛК ЮЛ|http|lkul.nalog.ru|443|/;ЛК ИП|http|lkip2.nalog.ru|443|/'
+          description: 'Цели ФНС: сайт и кабинеты. На хостах без российского маршрута до кабинетов оставить только сайт.'
+        - macro: '{$EDO.TARGETS.FNS.GOST}'
+          value: 'ЛК ЮЛ ГОСТ|gost|lkulgost.nalog.ru|443|/;ЛК ИП ГОСТ|gost|lkipgost.nalog.ru|443|/'
+          description: 'ГОСТ-кабинеты ФНС, проверяются через csptest КриптоПро CSP. Пусто на хостах без КриптоПро.'
+        - macro: '{$EDO.TARGETS.GOSUSLUGI}'
+          value: 'Госуслуги|http|www.gosuslugi.ru|443|/;ЕСИА|http|esia.gosuslugi.ru|443|/'
+          description: 'Цели Госуслуг.'
+        - macro: '{$EDO.TARGETS.KONTUR}'
+          value: 'Контур Auth|http|auth.kontur.ru|443|/_status/ping;Контур API|http|api.kontur.ru|443|/robots.txt;Контур Identity|http|identity.kontur.ru|443|/;Контур Update|http|update.kontur.ru|443|/_status/ping;УЦ Контур|http|pki.skbkontur.ru|80|/ping;УЦ Контур ЛК|http|ca.kontur.ru|443|/robots.txt;Диадок|http|diadoc.kontur.ru|443|/_status/ping;Диадок API|http|diadoc-api.kontur.ru|443|/_status/ping;Диадок EDI|http|edi.kontur.ru|443|/_status/ping;Диадок EDI API|http|edi-api.kontur.ru|443|/_status/ping;Экстерн|http|extern.kontur.ru|443|/;Экстерн CDN|http|cdn.kontur.host|443|/environments/Prod/bundles/connection-check/files/;Контур МЧД|http|m4d.kontur.ru|443|/'
+          description: 'Цели Контура, сверены с профилями diadoc, ke, m4d страницы help.kontur.ru/check.'
+        - macro: '{$EDO.TARGETS.STALL}'
+          value: 'Контур большой POST|stall|help.kontur.ru|443|/check/post'
+          description: 'Большой POST (256 КБ) — ловит обрыв передачи крупного тела. Интервал — {$EDO.INTERVAL:"stall"}.'
+        - macro: '{$EDO.TARGETS.TAXCOM}'
+          value: 'Такском|http|online.taxcom.ru|443|/;Такском ЛК|http|lk-new.taxcom.ru|443|/'
+          description: 'Цели Такскома.'
+        - macro: '{$EDO.TIMEOUT}'
+          value: 30s
+          description: 'Таймаут элемента «ответ пробы». Проба укладывается в 25 с; запуск powershell.exe на нагруженном TS — до 3 с.'
+        - macro: '{$EDO.UNSTABLE.CHANGES}'
+          value: '4'
+          description: 'Сколько смен класса за {$EDO.UNSTABLE.PERIOD} поднимают Warning «нестабилен». 4 — два отдельных отказа: одиночный сбой (0→20→0) и сплошной отказ с восстановлением дают по две смены.'
+        - macro: '{$EDO.UNSTABLE.PERIOD}'
+          value: 1h
+          description: 'Окно Warning «нестабилен». Для режима — контекст: {$EDO.UNSTABLE.PERIOD:"stall"}.'
+        - macro: '{$EDO.UNSTABLE.PERIOD:"stall"}'
+          value: 6h
+          description: 'Окно «нестабилен» для большого POST: при интервале 1h в часе одна проверка и смен не набирается.'
+      valuemaps:
+        - uuid: eb8d762e31e245879fa639fcaa42ded2
+          name: 'EDO probe class'
+          mappings:
+            - value: '0'
+              newvalue: OK
+            - value: '10'
+              newvalue: DNS_FAIL
+            - value: '20'
+              newvalue: TCP_TIMEOUT
+            - value: '22'
+              newvalue: TCP_REFUSED
+            - value: '23'
+              newvalue: TCP_FAIL
+            - value: '30'
+              newvalue: TLS_TIMEOUT
+            - value: '31'
+              newvalue: TLS_RESET
+            - value: '32'
+              newvalue: TLS_FAIL
+            - value: '33'
+              newvalue: CERT_UNTRUSTED
+            - value: '40'
+              newvalue: HTTP_BAD
+            - value: '42'
+              newvalue: HTTP_TIMEOUT
+            - value: '50'
+              newvalue: STALL
+            - value: '90'
+              newvalue: GOST_NO_CSP
+            - value: '91'
+              newvalue: PROBE_ERROR
+  triggers:
+    - uuid: 7fe19aa852184de4affde31c1190743f
+      expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
+      name: 'EDO: массовый отказ с хоста'
+      event_name: 'EDO: с {HOST.NAME} недоступно {ITEM.LASTVALUE1} целей из {ITEM.LASTVALUE3}'
+      opdata: 'Недоступно: {ITEM.LASTVALUE1} из {ITEM.LASTVALUE3}'
+      url_name: 'Цели с отказом'
+      url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=component&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D=availability&filter_set=1'
+      priority: HIGH
+      description: |
+        Последняя проверка закончилась отказом (класс 10–50) у {$EDO.MASS.PCT}% целей хоста и не меньше чем у {$EDO.MASS.MIN}: сеть, DNS, брандмауэр или прокси самого хоста, а не отдельные сервисы. Поднимается за 1–2 интервала проверки, раньше триггеров целей, поэтому они от него зависят. После закрытия цели, которые всё ещё не работают, поднимут свои триггеры на следующей проверке.
+
+        Что делать: классы целей — в «Последних данных» (ссылка). 10 у всех — DNS хоста; 20 — нет маршрута или шлюза; 23 — брандмауэр хоста режет исходящие; 30/31 у всех — прокси или DPI на выходе.
+      manual_close: 'YES'
+      dependencies:
+        - name: 'EDO: проба не работает на хосте'
+          expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.reporting)=0 or (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+          recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)=0 or (min(/EDO Monitor by Zabbix agent active/edo.targets.reporting,{$EDO.INTERVAL})>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.MIN} or 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+      tags:
+        - tag: scope
+          value: availability
+    - uuid: 458ab50ec940473d9ce626afd4eb9863
+      expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.reporting)=0 or (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+      recovery_mode: RECOVERY_EXPRESSION
+      recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)=0 or (min(/EDO Monitor by Zabbix agent active/edo.targets.reporting,{$EDO.INTERVAL})>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.MIN} or 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+      name: 'EDO: проба не работает на хосте'
+      event_name: 'EDO: проба не работает на {HOST.NAME}'
+      opdata: 'С данными за {$EDO.NODATA.HOST}: {ITEM.LASTVALUE2} из {ITEM.LASTVALUE1}, класс 90–91: {ITEM.LASTVALUE3}'
+      url_name: 'Последние данные EDO'
+      url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=component&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D=probe&filter_set=1'
+      priority: AVERAGE
+      description: |
+        Ни одна цель не прислала класс за {$EDO.NODATA.HOST} или у {$EDO.MASS.PCT}% целей класс 90–91. Агент при этом жив: от его триггеров этот зависит. Закрывается, только когда данные идут непрерывно {$EDO.INTERVAL}, — иначе nodata целей, ещё не успевших ответить, поднялись бы сразу после закрытия. О доступности сервисов это ничего не говорит.
+
+        Что делать:
+        - нет данных — нет edo-monitor.conf в zabbix_agent2.d или агент не перезапущен после раскладки; элементы «ответ пробы» не поддерживаются — текст ошибки в их свойствах; powershell.exe не укладывается в {$EDO.TIMEOUT} (перегруз хоста);
+        - класс 91 у всех — edo.ps1 отсутствует, повреждён или powershell.exe пишет в stderr: поле error в истории «ответ пробы».
+      manual_close: 'YES'
+      dependencies:
+        - name: 'Windows: Active checks are not available'
+          expression: 'min(/Windows by Zabbix agent active/zabbix[host,active_agent,available],{$AGENT.TIMEOUT})=2'
+        - name: 'Windows: Zabbix agent is not available'
+          expression: 'nodata(/Windows by Zabbix agent active/agent.ping,{$AGENT.NODATA_TIMEOUT})=1'
+      tags:
+        - tag: scope
+          value: data-collection
