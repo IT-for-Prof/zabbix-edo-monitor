@@ -379,6 +379,10 @@ Describe 'Macros' {
         [int](Get-MacroValue '{$EDO.MASS.MIN}') | Should -BeGreaterOrEqual 2
     }
 
+    It 'mass failure needs two bad rounds, not one' {
+        (ConvertTo-Seconds (Get-MacroValue '{$EDO.MASS.PERIOD}')) | Should -BeGreaterThan (ConvertTo-Seconds (Get-MacroValue '{$EDO.INTERVAL}'))
+    }
+
     It 'the instability threshold needs two separate failures, not one blip or one outage' {
         [int](Get-MacroValue '{$EDO.UNSTABLE.CHANGES}') | Should -BeGreaterOrEqual 4
         foreach ($ctx in @('', ':"stall"')) {
@@ -539,7 +543,7 @@ Describe 'Triggers' {
     }
 
     It 'host triggers refuse to fire on a host with fewer targets than the floor or none at all' {
-        (Get-Trigger 'EDO: массовый отказ с хоста').expression | Should -Match '^last\(/[^)]*edo\.targets\.failing\)>=\{\$EDO\.MASS\.MIN\} and '
+        (Get-Trigger 'EDO: массовый отказ с хоста').expression | Should -Match '^min\(/[^)]*edo\.targets\.failing,\{\$EDO\.MASS\.PERIOD\}\)>=\{\$EDO\.MASS\.MIN\} and 100\*min\(/[^)]*edo\.targets\.failing,\{\$EDO\.MASS\.PERIOD\}\)>='
         (Get-Trigger 'EDO: проба не работает на хосте').expression | Should -Match '^last\(/[^)]*edo\.targets\.total\)>0 and '
     }
 }

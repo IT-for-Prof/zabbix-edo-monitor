@@ -264,7 +264,7 @@ zabbix_export:
               manual_close: 'YES'
               dependencies:
                 - name: 'EDO: массовый отказ с хоста'
-                  expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
+                  expression: 'min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.MIN} and 100*min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
                 - name: 'EDO {#NAME}: нет данных пробы'
                   expression: 'nodata(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.NODATA:"{#MODE}"})=1'
                 - name: 'EDO {#NAME}: проверка невозможна'
@@ -442,8 +442,8 @@ zabbix_export:
           value: '#3'
           description: 'Период для High «недоступен», Warning «медленно» и «нестабилен» в формате Zabbix: #3 — последние три проверки. Целиком макрос, а не #{$MACRO}: Zabbix 7.0 не принимает макрос внутри счётчика функции.'
         - macro: '{$EDO.INTERVAL}'
-          value: 5m
-          description: 'Интервал проверки цели. Для режима — контекст: {$EDO.INTERVAL:"stall"}.'
+          value: 15m
+          description: 'Интервал проверки цели: редко, чтобы не шуметь и не попасть под лимиты сервисов; с {$EDO.FAIL.PERIOD}=#3 отказ цели поднимается через 30–45 минут. Для режима — контекст: {$EDO.INTERVAL:"stall"}.'
         - macro: '{$EDO.INTERVAL:"stall"}'
           value: 1h
           description: 'Интервал большого POST: редко, чтобы не нагружать чужой сервер со всех хостов.'
@@ -453,11 +453,14 @@ zabbix_export:
         - macro: '{$EDO.MASS.PCT}'
           value: '50'
           description: 'Доля целей хоста, %, с отказом (10–50) для High «массовый отказ с хоста» или с классом 90–91 для Average «проба не работает на хосте». 50: отказ одного Контура (13 из 28 целей) остаётся отказом сервиса по целям, а пропажа сети или DNS на хосте — одна проблема.'
+        - macro: '{$EDO.MASS.PERIOD}'
+          value: 20m
+          description: 'Сколько доля целей с отказом должна держаться, чтобы поднялся High «массовый отказ с хоста». Больше {$EDO.INTERVAL}: нужны два плохих круга подряд, один сбойный круг не поднимает тревогу.'
         - macro: '{$EDO.NODATA}'
-          value: 35m
+          value: 60m
           description: 'Окно без данных для Average «нет данных пробы» по цели. Больше {$EDO.INTERVAL} того же режима, больше {$AGENT.NODATA_TIMEOUT} (30m) и больше {$EDO.NODATA.HOST} с запасом на интервал: при смерти агента или пробы сначала поднимаются триггеры хоста, и зависимость гасит проверки целей.'
         - macro: '{$EDO.NODATA.HOST}'
-          value: 20m
+          value: 35m
           description: 'Окно, за которое ни одна цель хоста не прислала класс, для Average «проба не работает на хосте». Меньше {$EDO.NODATA} хотя бы на интервал проверки: иначе первые замолчавшие цели поднимут свои триггеры раньше хостового.'
         - macro: '{$EDO.NODATA:"stall"}'
           value: 3h
@@ -501,7 +504,7 @@ zabbix_export:
           value: '4'
           description: 'Сколько смен класса за {$EDO.UNSTABLE.PERIOD} поднимают Warning «нестабилен». 4 — два отдельных отказа: одиночный сбой (0→20→0) и сплошной отказ с восстановлением дают по две смены.'
         - macro: '{$EDO.UNSTABLE.PERIOD}'
-          value: 1h
+          value: 2h
           description: 'Окно Warning «нестабилен». Для режима — контекст: {$EDO.UNSTABLE.PERIOD:"stall"}.'
         - macro: '{$EDO.UNSTABLE.PERIOD:"stall"}'
           value: 6h
@@ -540,7 +543,7 @@ zabbix_export:
               newvalue: PROBE_ERROR
   triggers:
     - uuid: 7fe19aa852184de4affde31c1190743f
-      expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.failing)>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
+      expression: 'min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.MIN} and 100*min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
       name: 'EDO: массовый отказ с хоста'
       event_name: 'EDO: с {HOST.NAME} недоступно {ITEM.LASTVALUE1} целей из {ITEM.LASTVALUE3}'
       opdata: 'Недоступно: {ITEM.LASTVALUE1} из {ITEM.LASTVALUE3}'
