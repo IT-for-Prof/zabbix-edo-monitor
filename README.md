@@ -28,7 +28,7 @@
 | `{$EDO.TARGETS.FNS}` | www.nalog.gov.ru, lkul.nalog.ru, lkip2.nalog.ru |
 | `{$EDO.TARGETS.FNS.GOST}` | lkulgost.nalog.ru, lkipgost.nalog.ru |
 | `{$EDO.TARGETS.TAXCOM}` | online.taxcom.ru, lk-new.taxcom.ru |
-| `{$EDO.TARGETS.CRPT}` | markirovka.crpt.ru, ismp.crpt.ru, suzgrid.crpt.ru, crpt.ru |
+| `{$EDO.TARGETS.CRPT}` | markirovka.crpt.ru, ismp.crpt.ru, suzgrid.crpt.ru, suz.crpt.ru, crpt.ru |
 | `{$EDO.TARGETS.EXTRA}` | пусто — добавки офиса или хоста |
 
 ## На что реагирует
@@ -144,7 +144,7 @@ Restart-Service 'Zabbix Agent 2'
 | `{$EDO.NODATA}` | 35m | окно без данных для Average «нет данных пробы»; больше `{$AGENT.NODATA_TIMEOUT}` (30m) и больше `{$EDO.NODATA.HOST}` хотя бы на интервал, чтобы первыми срабатывали триггеры агента и хоста |
 | `{$EDO.NODATA:"stall"}` | 3h | то же для большого POST |
 | `{$EDO.NODATA.HOST}` | 20m | окно, за которое ни одна цель хоста не прислала класс, для «проба не работает на хосте» |
-| `{$EDO.MASS.PCT}` | 50 | доля целей хоста, %, для «массовый отказ» (классы 10–50) и «проба не работает на хосте» (классы 90–91); отказ одного Контура (13 из 27) остаётся отказом по целям |
+| `{$EDO.MASS.PCT}` | 50 | доля целей хоста, %, для «массовый отказ» (классы 10–50) и «проба не работает на хосте» (классы 90–91); отказ одного Контура (13 из 28) остаётся отказом по целям |
 | `{$EDO.MASS.MIN}` | 3 | минимум целей для обоих хостовых триггеров |
 | `{$EDO.FAIL.PERIOD}` | #3 | период для High «недоступен», Warning «медленно» и «нестабилен»: `#3` — последние три проверки |
 | `{$EDO.UNSTABLE.CHANGES}` | 4 | смен класса для «нестабилен»: два отдельных отказа |
