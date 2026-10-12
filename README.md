@@ -190,7 +190,7 @@ Restart-Service 'Zabbix Agent 2'
   OK   ЛК ЮЛ ГОСТ             lkulgost.nalog.ru:443            213.24.64.177      237 мс  сервер принял ГОСТ TLS (csptest)
   OK   ЛК ИП ГОСТ             lkipgost.nalog.ru:443            213.24.64.177      241 мс  сервер принял ГОСТ TLS (csptest)
 ...
-Итог (проверок: 27, 11 с): 26 OK, 1 FAIL
+Итог (проверок: 28, 11 с): 27 OK, 1 FAIL
 
 Что делать:
   [23 TCP_FAIL] TCP: ошибка сети: www.nalog.gov.ru (212.193.155.42:443)

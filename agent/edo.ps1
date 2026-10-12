@@ -390,7 +390,7 @@ $script:EdoTargets = [ordered]@{
     FNS       = 'ФНС|http|www.nalog.gov.ru|443|/;ЛК ЮЛ|http|lkul.nalog.ru|443|/;ЛК ИП|http|lkip2.nalog.ru|443|/'
     FNSGost   = 'ЛК ЮЛ ГОСТ|gost|lkulgost.nalog.ru|443|/;ЛК ИП ГОСТ|gost|lkipgost.nalog.ru|443|/'
     Taxcom    = 'Такском|http|online.taxcom.ru|443|/;Такском ЛК|http|lk-new.taxcom.ru|443|/'
-    CRPT      = 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак сайт|http|crpt.ru|443|/'
+    CRPT      = 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак СУЗ API|http|suz.crpt.ru|443|/;Честный знак сайт|http|crpt.ru|443|/'
 }
 $script:EdoGroupTitles = @{
     Kontur = 'Контур'; Stall = 'Контур: большая отправка'; Gosuslugi = 'Госуслуги'; FNS = 'ФНС'
