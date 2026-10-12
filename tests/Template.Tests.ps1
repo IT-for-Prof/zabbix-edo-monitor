@@ -567,3 +567,38 @@ Describe 'Agent config and README agree with the template' {
         foreach ($m in $script:T.macros) { $readme | Should -Match ([regex]::Escape($m.macro)) -Because $m.macro }
     }
 }
+
+Describe 'Interactive mode snapshot of template defaults' {
+    It 'group <group> equals <macro>' -ForEach @(
+        @{ group = 'Kontur'; macro = '{$EDO.TARGETS.KONTUR}' }
+        @{ group = 'Stall'; macro = '{$EDO.TARGETS.STALL}' }
+        @{ group = 'Gosuslugi'; macro = '{$EDO.TARGETS.GOSUSLUGI}' }
+        @{ group = 'FNS'; macro = '{$EDO.TARGETS.FNS}' }
+        @{ group = 'FNSGost'; macro = '{$EDO.TARGETS.FNS.GOST}' }
+        @{ group = 'Taxcom'; macro = '{$EDO.TARGETS.TAXCOM}' }
+        @{ group = 'CRPT'; macro = '{$EDO.TARGETS.CRPT}' }
+    ) {
+        $script:EdoTargets[$group] | Should -BeExactly (Get-MacroValue $macro)
+    }
+
+    It 'covers every non-empty target macro and nothing else' {
+        @($script:EdoTargets.Keys).Count | Should -Be 7
+        @($script:TargetMacros | Where-Object { Get-MacroValue $_ }).Count | Should -Be 7
+        Get-MacroValue '{$EDO.TARGETS.EXTRA}' | Should -BeExactly ''
+    }
+
+    It 'thresholds equal the macro defaults' {
+        $script:EdoThresholds.SlowMs | Should -Be ([int](Get-MacroValue '{$EDO.SLOW.MS}'))
+        $script:EdoThresholds.SlowStallMs | Should -Be ([int](Get-MacroValue '{$EDO.SLOW.MS:"help.kontur.ru"}'))
+        $script:EdoThresholds.CertDays | Should -Be ([int](Get-MacroValue '{$EDO.CERT.DAYS}'))
+        $script:EdoThresholds.MassPct | Should -Be ([int](Get-MacroValue '{$EDO.MASS.PCT}'))
+        $script:EdoThresholds.MassMin | Should -Be ([int](Get-MacroValue '{$EDO.MASS.MIN}'))
+    }
+
+    It 'parses into 27 valid targets' {
+        $all = @(Get-EdoDefaultTargets)
+        $all.Count | Should -Be 27
+        foreach ($t in $all) { $t.Error | Should -BeNullOrEmpty -Because $t.Name; Test-EdoArgs $t.Mode $t.Host $t.Port $t.Path | Should -BeNullOrEmpty }
+        @($all | Where-Object { $_.Group -eq 'FNSGost' -and $_.Mode -eq 'gost' }).Count | Should -Be 2
+    }
+}
