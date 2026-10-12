@@ -598,7 +598,7 @@ Describe 'Interactive mode snapshot of template defaults' {
     It 'parses into 27 valid targets' {
         $all = @(Get-EdoDefaultTargets)
         $all.Count | Should -Be 27
-        foreach ($t in $all) { $t.Error | Should -BeNullOrEmpty -Because $t.Name; Test-EdoArgs $t.Mode $t.Host $t.Port $t.Path | Should -BeNullOrEmpty }
+        foreach ($t in $all) { $t.Error | Should -BeNullOrEmpty -Because $t.Name }
         @($all | Where-Object { $_.Group -eq 'FNSGost' -and $_.Mode -eq 'gost' }).Count | Should -Be 2
     }
 }

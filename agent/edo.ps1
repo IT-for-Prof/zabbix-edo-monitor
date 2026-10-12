@@ -433,19 +433,29 @@ EDO Monitor — ручная диагностика доступа к ЭДО и 
 Код выхода: 0 — отказов нет, 1 — есть FAIL или ERR, 2 — неверные параметры.
 '@
 
-# "Name|mode|host|port|path;..." -> targets; Error names an invalid entry.
+# A target checked by the probe's own argument rules; Error says which entry ($Context) is invalid.
+function New-EdoTarget {
+    param([string]$Group, [string]$Name, [string]$Mode, [string]$TargetHost, [string]$Port, [string]$Path, [string]$Context)
+    $t = [pscustomobject]@{ Group = $Group; Name = $Name; Mode = $Mode; Host = $TargetHost; Port = $Port; Path = $Path; Error = $null }
+    $bad = Test-EdoArgs -Mode $Mode -TargetHost $TargetHost -Port $Port -Path $Path
+    if ($bad) { $t.Error = "${Context}: $bad" }
+    $t
+}
+
+# "Name|mode|host|port|path;..." -> targets.
 function ConvertFrom-EdoTargetList {
     param([string]$Text, [string]$Group = '')
     foreach ($entry in @($Text -split ';')) {
         $entry = $entry.Trim()
         if (-not $entry) { continue }
         $f = @($entry -split '\|' | ForEach-Object { $_.Trim() })
-        $t = [pscustomobject]@{ Group = $Group; Name = $f[0]; Mode = ''; Host = ''; Port = ''; Path = ''; Error = $null }
-        if ($f.Count -ne 5) { $t.Error = "запись «$entry»: нужно Имя|mode|host|port|path"; $t; continue }
-        $t.Mode = $f[1]; $t.Host = $f[2]; $t.Port = $f[3]; $t.Path = $f[4]
-        $bad = Test-EdoArgs -Mode $t.Mode -TargetHost $t.Host -Port $t.Port -Path $t.Path
-        if ($bad) { $t.Error = "запись «$entry»: $bad" }
-        $t
+        if ($f.Count -ne 5) {
+            $t = New-EdoTarget $Group $f[0] '' '' '' '' ''
+            $t.Error = "запись «$entry»: нужно Имя|mode|host|port|path"
+            $t
+            continue
+        }
+        New-EdoTarget $Group $f[0] $f[1] $f[2] $f[3] $f[4] "запись «$entry»"
     }
 }
 
@@ -460,16 +470,16 @@ function Get-EdoDefaultTargets {
 # -Target host[:port][/path] (http) or -Gost host[:port].
 function ConvertFrom-EdoTargetSpec {
     param([string]$Spec, [string]$Mode)
-    $t = [pscustomobject]@{ Group = ''; Name = ($Spec -split '[:/]')[0]; Mode = $Mode; Host = ''; Port = '443'; Path = '/'; Error = $null }
     $pattern = '^([^:/]+)(?::([0-9]{1,5}))?(/.*)?\z'
     if ($Mode -eq 'gost') { $pattern = '^([^:/]+)(?::([0-9]{1,5}))?\z' }
-    if ($Spec -notmatch $pattern) { $t.Error = "цель «$Spec»: нужно хост[:порт]$(if ($Mode -eq 'http') { '[/путь]' })"; return $t }
-    $t.Host = $Matches[1]
-    if ($Matches[2]) { $t.Port = $Matches[2] }
-    if ($Matches[3]) { $t.Path = $Matches[3] }
-    $bad = Test-EdoArgs -Mode $Mode -TargetHost $t.Host -Port $t.Port -Path $t.Path
-    if ($bad) { $t.Error = "цель «$Spec»: $bad" }
-    $t
+    if ($Spec -notmatch $pattern) {
+        $t = New-EdoTarget '' $Spec $Mode '' '' '' ''
+        $t.Error = "цель «$Spec»: нужно хост[:порт]$(if ($Mode -eq 'http') { '[/путь]' })"
+        return $t
+    }
+    $port = '443'; if ($Matches[2]) { $port = $Matches[2] }
+    $path = '/'; if ($Matches[3]) { $path = $Matches[3] }
+    New-EdoTarget '' $Matches[1] $Mode $Matches[1] $port $path "цель «$Spec»"
 }
 
 function Get-EdoSelectedTargets {
@@ -573,9 +583,8 @@ function ConvertTo-EdoProxyUri {
         $pick = ''
         foreach ($k in 'https', 'http') { if ($parts.ContainsKey($k)) { $pick = $parts[$k]; break } }
     }
-    $pick = @($pick -split '[;\s]' | Where-Object { $_ })
-    if ($pick.Count -eq 0) { return $null }
-    $pick = $pick[0]
+    $pick = $pick -split '[;\s]' | Where-Object { $_ } | Select-Object -First 1
+    if (-not $pick) { return $null }
     if ($pick -notmatch '^[A-Za-z]+://') { $pick = "http://$pick" }
     New-Object Uri($pick)
 }
@@ -598,14 +607,14 @@ function Get-EdoProxyInfo {
 # One GET through the proxy the user's Windows settings pick for this address (static, PAC or WPAD, as .NET resolves
 # them), else through WinHTTP. Returns one line of text.
 function Invoke-EdoProxyFetch {
-    param($Target, [string]$WinHttp)
-    $scheme = 'https'; if ($Target.Port -eq '80') { $scheme = 'http' }
+    param($Target, [string]$WinHttp, $SystemProxy = [Net.WebRequest]::GetSystemWebProxy())
+    $scheme = 'http'; if (Get-EdoUseTls -Port $Target.Port) { $scheme = 'https' }
     $uri = New-Object Uri("${scheme}://$($Target.Host):$($Target.Port)$($Target.Path)")
     $proxyUri = $null; $source = ''
-    $system = [Net.WebRequest]::GetSystemWebProxy()
-    if (-not $system.IsBypassed($uri)) { $proxyUri = $system.GetProxy($uri); $source = 'прокси Windows' }
+    if (-not $SystemProxy.IsBypassed($uri)) { $proxyUri = $SystemProxy.GetProxy($uri); $source = 'прокси Windows' }
     elseif ($WinHttp) { $proxyUri = ConvertTo-EdoProxyUri $WinHttp; $source = 'прокси WinHTTP' }
     if ($null -eq $proxyUri) { return 'через прокси: для этого адреса прокси не применяется' }
+    $via = "через $source $($proxyUri.Authority)"
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $response = $null
     try {
@@ -629,9 +638,9 @@ function Invoke-EdoProxyFetch {
         $text = "HTTP $code"
         if ($code -eq 407) { $text = 'HTTP 407: прокси требует аутентификацию, которую Windows не передала' }
         elseif ($code -ge 500) { $text = "HTTP ${code}: ошибка на прокси или сервисе" }
-        "через $source $($proxyUri.Authority): $text, $($sw.ElapsedMilliseconds) мс"
+        "${via}: $text, $($sw.ElapsedMilliseconds) мс"
     } catch {
-        "через $source $($proxyUri.Authority): $(Format-EdoError $_.Exception), $($sw.ElapsedMilliseconds) мс"
+        "${via}: $(Format-EdoError $_.Exception), $($sw.ElapsedMilliseconds) мс"
     } finally {
         if ($null -ne $response) { $response.Close() }
     }
@@ -678,7 +687,9 @@ function Invoke-EdoInteractive {
     )
     $report = New-Object Collections.Generic.List[string]
     function Out-Line([string]$Text = '', [string]$Color = '') { $report.Add($Text); & $Sink $Text $Color }
-    $colors = @{ OK = 'Green'; SLOW = 'Yellow'; CERT = 'Yellow'; FAIL = 'Red'; ERR = 'Red'; 'N/A' = 'DarkGray' }
+    # Labels in summary order.
+    $colors = [ordered]@{ OK = 'Green'; SLOW = 'Yellow'; CERT = 'Yellow'; FAIL = 'Red'; ERR = 'Red'; 'N/A' = 'DarkGray' }
+    $failed = { $_.label -eq 'FAIL' -or $_.label -eq 'ERR' }
 
     $o = ConvertFrom-EdoSwitches $ArgList
     if ($o.Error) { Out-Line "Ошибка: $($o.Error)" 'Red'; Out-Line $script:EdoUsage; return 2 }
@@ -707,6 +718,8 @@ function Invoke-EdoInteractive {
     Out-Line (Get-EdoFirewallNote)
     if ($anyProxy -and -not $o.ViaProxy) { Out-Line 'Проверки идут напрямую, мимо прокси. Путь через прокси покажет -ViaProxy.' 'Yellow' }
     if ($o.ViaProxy -and -not $anyProxy) { Out-Line 'прокси не настроен: -ViaProxy ничего не добавит, проверки идут напрямую.' 'Yellow' }
+    # One object for the run: with PAC or WPAD a new one would fetch the script again for every target.
+    $systemProxy = $null; if ($o.ViaProxy -and $anyProxy) { $systemProxy = [Net.WebRequest]::GetSystemWebProxy() }
     if (-not ($o.Target -or $o.Gost -or $o.Targets)) { Out-Line 'Цели: значения шаблона Zabbix по умолчанию; переопределения макросов на хосте или группе здесь не видны — передайте их через -Targets.' 'DarkGray' }
 
     $records = New-Object Collections.ArrayList
@@ -725,14 +738,14 @@ function Invoke-EdoInteractive {
                 $label = Get-EdoLabel $r $t
                 Out-Line (Format-EdoLine $label $t $r) $colors[$label]
                 $viaProxy = ''
-                if ($o.ViaProxy -and $anyProxy -and $t.Mode -eq 'http') { $viaProxy = Invoke-EdoProxyFetch $t $ProxyInfo.WinHttp; Out-Line "         $viaProxy" }
+                if ($systemProxy -and $t.Mode -eq 'http') { $viaProxy = Invoke-EdoProxyFetch $t $ProxyInfo.WinHttp $systemProxy; Out-Line "         $viaProxy" }
                 $rec = [ordered]@{ pass = $pass; group = $t.Group; name = $t.Name; mode = $t.Mode; host = $t.Host; port = $t.Port; path = $t.Path; label = $label }
                 foreach ($k in @($r.Keys)) { $rec[$k] = $r[$k] }
                 $rec['via_proxy'] = $viaProxy
                 [void]$records.Add($rec)
             }
             if ($o.Repeat -gt 1) {
-                $bad = @($records | Where-Object { $_.pass -eq $pass -and $_.class -ge 10 -and $_.class -ne 90 })
+                $bad = @($records | Where-Object { $_.pass -eq $pass } | Where-Object $failed)
                 Out-Line "Проход ${pass}: отказов $($bad.Count)$(if ($bad.Count) { ' — ' + (@($bad | ForEach-Object { $_.host }) -join ', ') })"
             }
         }
@@ -746,27 +759,26 @@ function Invoke-EdoInteractive {
             $why = '.'; if ($failure) { $why = " ошибкой: $failure." }
             Out-Line "Прогон прерван$why Итог — только по завершённым проверкам." 'Yellow'
         }
-        $counts = @(foreach ($l in 'OK', 'SLOW', 'CERT', 'FAIL', 'ERR', 'N/A') { $n = @($records | Where-Object { $_.label -eq $l }).Count; if ($n) { "$n $l" } })
+        $counts = @(foreach ($l in @($colors.Keys)) { $n = @($records | Where-Object { $_.label -eq $l }).Count; if ($n) { "$n $l" } })
         $summary = "Итог (проверок: $($records.Count), $([int]$elapsed.Elapsed.TotalSeconds) с)"
         if ($counts.Count) { $summary += ': ' + ($counts -join ', ') }
         $summaryColor = 'Green'
-        if (@($records | Where-Object { $_.label -eq 'FAIL' -or $_.label -eq 'ERR' }).Count) { $summaryColor = 'Red' }
+        if (@($records | Where-Object $failed).Count) { $summaryColor = 'Red' }
         elseif (@($records | Where-Object { $_.label -ne 'OK' }).Count) { $summaryColor = 'Yellow' }
         Out-Line $summary $summaryColor
 
-        $mass = @(1..$o.Repeat | Where-Object { $p = $_; $inPass = @($records | Where-Object { $_.pass -eq $p }); $inPass.Count -and (Test-EdoMassFailure $inPass) })
+        $mass = @($records | Group-Object { $_.pass } | Where-Object { Test-EdoMassFailure @($_.Group) })
         if ($mass.Count) {
             if ($anyProxy) { Out-Line 'Массовый отказ: большинство целей недоступно напрямую, а на компьютере настроен прокси. Вероятно, прямой выход в интернет закрыт и пользователи ходят через прокси — проверьте этот путь с -ViaProxy.' 'Red' }
             else { Out-Line 'Массовый отказ: недоступна большая часть целей сразу — проблема у этого компьютера или его сети (брандмауэр, DNS, прокси, провайдер), а не у сервисов.' 'Red' }
         }
 
         if ($o.Repeat -gt 1) {
-            $keys = @($records | ForEach-Object { "$($_.name)|$($_.host)" } | Select-Object -Unique)
             Out-Line 'По целям, удачно/отказ за все проходы:'
-            foreach ($key in $keys) {
-                $of = @($records | Where-Object { "$($_.name)|$($_.host)" -eq $key })
+            foreach ($target in @($records | Group-Object { "$($_.name)|$($_.host)" })) {
+                $of = @($target.Group)
                 $okCount = @($of | Where-Object { $_.class -eq 0 }).Count
-                $badCount = @($of | Where-Object { $_.class -ge 10 -and $_.class -ne 90 }).Count
+                $badCount = @($of | Where-Object $failed).Count
                 $note = ''; $color = ''
                 if ($okCount -and $badCount) { $note = '  нестабильно: то работает, то нет'; $color = 'Yellow' }
                 elseif ($badCount) { $color = 'Red' }
@@ -804,7 +816,7 @@ function Invoke-EdoInteractive {
             } catch { Out-Line "Не удалось сохранить отчёт: $(Format-EdoError $_.Exception)" 'Red' }
         }
     }
-    if ($failure -or @($records | Where-Object { $_.label -eq 'FAIL' -or $_.label -eq 'ERR' }).Count) { return 1 }
+    if ($failure -or @($records | Where-Object $failed).Count) { return 1 }
     0
 }
 

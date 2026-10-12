@@ -416,7 +416,7 @@ Describe 'Interactive mode' {
             $r
         }
         function New-Target([string]$Mode = 'http', [int]$Port = 443) {
-            [pscustomobject]@{ Group = ''; Name = 'Цель'; Mode = $Mode; Host = 'example.com'; Port = "$Port"; Path = '/'; Error = $null }
+            @(ConvertFrom-EdoTargetList "Цель|$Mode|example.com|$Port|/")[0]
         }
         $script:NoProxy = @{ WinHttp = ''; UserProxy = ''; UserPac = '' }
         function Invoke-Interactive([object[]]$ArgList, [scriptblock]$Probe, $ProxyInfo = $script:NoProxy) {
@@ -578,16 +578,14 @@ Describe 'Interactive mode' {
         }
 
         It 'an exception mid-run still prints the summary and writes -Out, marked interrupted' {
-            $out = Join-Path ([IO.Path]::GetTempPath()) ('edo-int-' + [guid]::NewGuid())
+            $out = Join-Path $TestDrive 'int'
             $probe = { param($t) if ($t.Host -eq 'b.example') { throw 'boom' }; New-Result 0 }
-            try {
-                $r = Invoke-Interactive @('-Targets', 'A|http|a.example|443|/;B|http|b.example|443|/;C|http|c.example|443|/', '-Out', $out) $probe
-                $r.Code | Should -Be 1
-                $r.Text | Should -Match 'прерван'
-                $r.Text | Should -Match 'boom'
-                Test-Path -LiteralPath "$out.txt" | Should -BeTrue
-                (ConvertFrom-Json (Get-Content -LiteralPath "$out.json" -Raw)).Count | Should -Be 1
-            } finally { Remove-Item -LiteralPath "$out.txt", "$out.json" -ErrorAction SilentlyContinue }
+            $r = Invoke-Interactive @('-Targets', 'A|http|a.example|443|/;B|http|b.example|443|/;C|http|c.example|443|/', '-Out', $out) $probe
+            $r.Code | Should -Be 1
+            $r.Text | Should -Match 'прерван'
+            $r.Text | Should -Match 'boom'
+            Test-Path -LiteralPath "$out.txt" | Should -BeTrue
+            (ConvertFrom-Json (Get-Content -LiteralPath "$out.json" -Raw)).Count | Should -Be 1
         }
 
         It '-Repeat 3 counts passes, flags an unstable target, runs stall once, returns 1' {
@@ -601,18 +599,16 @@ Describe 'Interactive mode' {
         }
 
         It '-Out writes plain text and JSON with numeric classes' {
-            $out = Join-Path ([IO.Path]::GetTempPath()) ('edo-out-' + [guid]::NewGuid())
-            try {
-                [void](Invoke-Interactive @('-Repeat', '2', '-Targets', 'A|http|a.example|443|/;B|http|b.example|443|/', '-Out', "$out.txt") { param($t) New-Result 0 })
-                $json = (ConvertFrom-Json (Get-Content -LiteralPath "$out.json" -Raw))
-                $json.Count | Should -Be 4
-                $json[0].class | Should -BeOfType [int]
-                $json[0].name | Should -Be 'A'
-                $json[0].pass | Should -Be 1
-                $txt = Get-Content -LiteralPath "$out.txt" -Raw
-                $txt | Should -Match 'Итог'
-                $txt | Should -Not -Match "\x1b"
-            } finally { Remove-Item -LiteralPath "$out.txt", "$out.json" -ErrorAction SilentlyContinue }
+            $out = Join-Path $TestDrive 'out'
+            [void](Invoke-Interactive @('-Repeat', '2', '-Targets', 'A|http|a.example|443|/;B|http|b.example|443|/', '-Out', "$out.txt") { param($t) New-Result 0 })
+            $json = ConvertFrom-Json (Get-Content -LiteralPath "$out.json" -Raw)
+            $json.Count | Should -Be 4
+            $json[0].class | Should -BeOfType [int]
+            $json[0].name | Should -Be 'A'
+            $json[0].pass | Should -Be 1
+            $txt = Get-Content -LiteralPath "$out.txt" -Raw
+            $txt | Should -Match 'Итог'
+            $txt | Should -Not -Match "\x1b"
         }
     }
 
