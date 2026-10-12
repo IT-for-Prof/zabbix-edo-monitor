@@ -738,6 +738,14 @@ Describe 'Interactive mode' {
             ($r.StdOut | ConvertFrom-Json).class | Should -Be 91
         }
 
+        It 'switches select manual mode only when not SYSTEM; no arguments always do' {
+            Test-EdoManualCall @() $true | Should -BeTrue
+            Test-EdoManualCall @('-Group', 'FNS') $false | Should -BeTrue
+            Test-EdoManualCall @('-Group', 'FNS') $true | Should -BeFalse
+            Test-EdoManualCall @('-1', 'example.com', '443', '/') $false | Should -BeFalse
+            Test-EdoManualCall @('http', 'example.com', '443', '/') $false | Should -BeFalse
+        }
+
         It 'bad switch exits 2' {
             (Invoke-ProbeProcess -ScriptPath $script:ProbePath -ArgumentList @('-Bogus')).ExitCode | Should -Be 2
         }

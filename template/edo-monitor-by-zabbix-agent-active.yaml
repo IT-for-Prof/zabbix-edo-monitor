@@ -463,7 +463,7 @@ zabbix_export:
           value: 3h
           description: 'Окно без данных для режима stall; больше {$EDO.INTERVAL:"stall"}.'
         - macro: '{$EDO.SCRIPT.MD5}'
-          value: 14508a7547fd4d6d22c9bd688db7b345
+          value: 4f2f92e0b58f2a4ede97ca6f25d77985
           description: 'MD5 текущей версии agent/edo.ps1 (в CRLF, как после checkout). Меняется вместе со скриптом; расхождение на хосте — Average.'
         - macro: '{$EDO.SLOW.MS}'
           value: '3000'

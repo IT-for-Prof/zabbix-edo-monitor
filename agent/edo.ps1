@@ -851,10 +851,21 @@ function Invoke-EdoInteractive {
     0
 }
 
+# Manual mode by switches is for people. Under LocalSystem (the agent) a first argument starting with "-" stays a
+# probe call and gets class 91 JSON, whatever produced it.
+function Test-EdoManualCall {
+    param([object[]]$ArgList, [bool]$IsSystem)
+    if ($ArgList.Count -eq 0) { return $true }
+    (-not $IsSystem) -and ("$($ArgList[0])" -match '^-[A-Za-z?]')
+}
 if ($MyInvocation.InvocationName -ne '.') {
     $ProgressPreference = 'SilentlyContinue'
     $WarningPreference = 'SilentlyContinue'
-    if ($args.Count -eq 0 -or "$($args[0])".StartsWith('-')) { exit (Invoke-EdoInteractive -ArgList $args) }
+    if (Test-EdoManualCall $args ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem)) {
+        # Exit 1 also when Ctrl+C stops the run: the pipeline then never reaches a normal exit.
+        $code = 1
+        try { $code = Invoke-EdoInteractive -ArgList $args } finally { [Environment]::Exit($code) }
+    }
     try {
         $result = Invoke-EdoProbe -Mode "$($args[0])" -TargetHost "$($args[1])" -Port "$($args[2])" -Path "$($args[3])"
     } catch {
