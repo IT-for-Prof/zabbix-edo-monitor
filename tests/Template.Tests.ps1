@@ -599,9 +599,9 @@ Describe 'Interactive mode snapshot of template defaults' {
         $script:EdoThresholds.MassMin | Should -Be ([int](Get-MacroValue '{$EDO.MASS.MIN}'))
     }
 
-    It 'parses into 27 valid targets' {
+    It 'parses into 28 valid targets' {
         $all = @(Get-EdoDefaultTargets)
-        $all.Count | Should -Be 27
+        $all.Count | Should -Be 28
         foreach ($t in $all) { $t.Error | Should -BeNullOrEmpty -Because $t.Name }
         @($all | Where-Object { $_.Group -eq 'FNSGost' -and $_.Mode -eq 'gost' }).Count | Should -Be 2
     }
