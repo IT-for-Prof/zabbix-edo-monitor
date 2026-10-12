@@ -21,7 +21,7 @@ zabbix_export:
         Repo:    https://github.com/IT-for-Prof/zabbix-edo-monitor
       vendor:
         name: itforprof.com
-        version: 1.3.0
+        version: 1.4.0
       groups:
         - name: Templates/Custom
       items:
@@ -466,7 +466,7 @@ zabbix_export:
           value: 3h
           description: 'Окно без данных для режима stall; больше {$EDO.INTERVAL:"stall"}.'
         - macro: '{$EDO.SCRIPT.MD5}'
-          value: 40a1c3182d81a698fc7a305107946425
+          value: 23dcb8de2b50c93845a7e61f2b474657
           description: 'MD5 текущей версии agent/edo.ps1 (в CRLF, как после checkout). Меняется вместе со скриптом; расхождение на хосте — Average.'
         - macro: '{$EDO.SLOW.MS}'
           value: '3000'
