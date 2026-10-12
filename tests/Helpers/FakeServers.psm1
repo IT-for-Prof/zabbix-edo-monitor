@@ -55,7 +55,9 @@ function Get-ClosedPort {
 function Invoke-ProbeProcess {
     param(
         [Parameter(Mandatory)] [string] $ScriptPath,
-        [string[]] $ArgumentList = @()
+        [string[]] $ArgumentList = @(),
+        # Interactive mode writes through the console host: redirected, that is the OEM code page.
+        [switch] $Oem
     )
     $quoted = @($ArgumentList | ForEach-Object { '"' + $_ + '"' }) -join ' '
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -65,6 +67,7 @@ function Invoke-ProbeProcess {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    if ($Oem) { $psi.StandardOutputEncoding = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) }
     $psi.CreateNoWindow = $true
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = [Diagnostics.Process]::Start($psi)

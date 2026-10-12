@@ -4,13 +4,19 @@
 
 .DESCRIPTION
     Run by Zabbix agent2 through UserParameter edo.probe[mode,host,port,path].
-    Always prints exactly one ASCII JSON object and exits with code 0; every failure,
+    With positional arguments (the Zabbix call) it always prints exactly one ASCII JSON object and exits with code 0; every failure,
     including bad arguments, becomes a class code. Nothing is ever written to stderr:
     agent2 glues stderr into the item value and would break every dependent item.
 
     Classes: 0 OK, 10 DNS_FAIL, 20 TCP_TIMEOUT, 22 TCP_REFUSED, 23 TCP_FAIL,
     30 TLS_TIMEOUT, 31 TLS_RESET, 32 TLS_FAIL, 33 CERT_UNTRUSTED, 40 HTTP_BAD,
     42 HTTP_TIMEOUT, 50 STALL, 90 GOST_NO_CSP, 91 PROBE_ERROR.
+
+    Manual diagnostics: run without arguments, or with switches (-Group, -Target, -Gost,
+    -Targets, -ViaProxy, -Repeat, -Out, -Help), to get a readable table instead of JSON: the
+    template's default targets, or your own with -Target, -Gost, -Targets. Exit code 0 no failures,
+    1 failures or an interrupted run (Ctrl+C included), 2 bad switches. Under LocalSystem switches
+    do not select manual mode: a first argument starting with "-" stays a probe call (class 91 JSON).
 
 .NOTES
     itforprof.com by Konstantin Tyutyunnik
@@ -371,9 +377,501 @@ function ConvertTo-EdoJson {
     '{' + ($parts -join ',') + '}'
 }
 
+# ---------------------------------------------------------------- Manual diagnostics
+# Run by hand: no arguments, or switches. agent2 always passes four positional arguments and discovery never
+# yields a mode starting with "-", so the Zabbix path below stays untouched.
+
+# Snapshot of the template's default {$EDO.TARGETS.*}, pinned to it by tests/Template.Tests.ps1. Overrides of
+# these macros on a host or group in Zabbix are not visible here: pass the effective value with -Targets.
+$script:EdoTargets = [ordered]@{
+    Kontur    = 'Контур Auth|http|auth.kontur.ru|443|/_status/ping;Контур API|http|api.kontur.ru|443|/robots.txt;Контур Identity|http|identity.kontur.ru|443|/;Контур Update|http|update.kontur.ru|443|/_status/ping;УЦ Контур|http|pki.skbkontur.ru|80|/ping;УЦ Контур ЛК|http|ca.kontur.ru|443|/robots.txt;Диадок|http|diadoc.kontur.ru|443|/_status/ping;Диадок API|http|diadoc-api.kontur.ru|443|/_status/ping;Диадок EDI|http|edi.kontur.ru|443|/_status/ping;Диадок EDI API|http|edi-api.kontur.ru|443|/_status/ping;Экстерн|http|extern.kontur.ru|443|/;Экстерн CDN|http|cdn.kontur.host|443|/environments/Prod/bundles/connection-check/files/;Контур МЧД|http|m4d.kontur.ru|443|/'
+    Stall     = 'Контур большой POST|stall|help.kontur.ru|443|/check/post'
+    Gosuslugi = 'Госуслуги|http|www.gosuslugi.ru|443|/;ЕСИА|http|esia.gosuslugi.ru|443|/'
+    FNS       = 'ФНС|http|www.nalog.gov.ru|443|/;ЛК ЮЛ|http|lkul.nalog.ru|443|/;ЛК ИП|http|lkip2.nalog.ru|443|/'
+    FNSGost   = 'ЛК ЮЛ ГОСТ|gost|lkulgost.nalog.ru|443|/;ЛК ИП ГОСТ|gost|lkipgost.nalog.ru|443|/'
+    Taxcom    = 'Такском|http|online.taxcom.ru|443|/;Такском ЛК|http|lk-new.taxcom.ru|443|/'
+    CRPT      = 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак сайт|http|crpt.ru|443|/'
+}
+$script:EdoGroupTitles = @{
+    Kontur = 'Контур'; Stall = 'Контур: большая отправка'; Gosuslugi = 'Госуслуги'; FNS = 'ФНС'
+    FNSGost = 'ФНС: кабинеты с ГОСТ TLS'; Taxcom = 'Такском'; CRPT = 'Честный знак'
+}
+# Template macro defaults: {$EDO.SLOW.MS}, {$EDO.SLOW.MS:"help.kontur.ru"} (the stall target), {$EDO.CERT.DAYS},
+# {$EDO.MASS.PCT}, {$EDO.MASS.MIN}.
+$script:EdoThresholds = @{ SlowMs = 3000; SlowStallMs = 8000; CertDays = 14; MassPct = 50; MassMin = 3 }
+
+# Per class: what broke, in a few words, and what to do about it.
+$script:EdoAdvice = @{
+    10 = @('DNS: имя не разрешается', 'Компьютер не получил IPv4-адрес для имени. Проверить DNS-серверы в настройках сети (Resolve-DnsName <имя>), доступ к DNS через брандмауэр, фильтрацию DNS у провайдера.')
+    20 = @('TCP: нет ответа', 'Пакеты до адреса не доходят или ответ не возвращается. Проверить исходящие правила брандмауэра Windows и периметра для указанных IP и порта, маршрут. Блокировку у провайдера (ТСПУ) покажет сравнение с другим компьютером или провайдером.')
+    22 = @('TCP: соединение отклонено', 'На подключение пришёл отказ (RST): порт на сервере закрыт или соединение сбрасывает межсетевой экран по пути. Если так со всех компьютеров — сервис недоступен; если только с этого — проверить правила и прокси.')
+    23 = @('TCP: ошибка сети', 'Подключение не началось. AccessDenied — запрет брандмауэра Windows на этом компьютере: нужно разрешающее исходящее правило для указанных IP и порта. Если правило есть, адрес мог смениться, и правило его не покрывает. Иначе — нет маршрута или сеть недоступна (текст ошибки — в строке цели).')
+    30 = @('TLS: сервер молчит', 'TCP-соединение есть, а TLS-рукопожатие не завершилось вовремя: признак DPI/ТСПУ или прокси, удерживающего соединение. Сравнить с другим провайдером. Для ГОСТ-целей — csptest не ответил вовремя.')
+    31 = @('TLS: соединение сброшено', 'Соединение оборвали во время TLS-рукопожатия — типичная фильтрация по имени сервера (SNI): ТСПУ, DLP, межсетевой экран с инспекцией TLS.')
+    32 = @('TLS: рукопожатие не прошло', 'Сервер или посредник отверг TLS. Для ГОСТ-целей — сервер не принял ГОСТ ClientHello или сбой КриптоПро CSP (код ошибки — в строке цели); для остальных — несовместимые протоколы или шифры на пути.')
+    33 = @('TLS: сертификат не доверенный', 'Сертификат сервера не прошёл проверку Windows; издатель — в строке цели. Если издатель — антивирус, прокси или DLP, а не сервис, включена подмена TLS: нужно исключение для адреса. Если издатель — Russian Trusted CA, установить корневые сертификаты НУЦ Минцифры.')
+    40 = @('HTTP: ошибка сервера', 'Ответ с кодом 5xx или не по протоколу HTTP. Если так со всех компьютеров — сбой самого сервиса, проверить его статус; если только с этого — посредник на пути (прокси, фильтр).')
+    42 = @('HTTP: нет ответа', 'Запрос отправлен, ответ не пришёл вовремя: перегрузка сервиса или фильтр, задерживающий ответы.')
+    50 = @('большая отправка оборвалась', 'Отправка 256 КБ оборвалась или застряла: признак ТСПУ/DPI, режущего объёмные TLS-сессии, или проблем с MTU. У пользователей будет зависать отправка документов и отчётности.')
+    90 = @('нет КриптоПро CSP', 'csptest.exe не найден, ГОСТ-проверка невозможна. Установить КриптоПро CSP, если с этого компьютера работают в ГОСТ-кабинетах ФНС; иначе группу FNSGost здесь не проверять.')
+    91 = @('проверка не выполнена', 'Внутренняя ошибка пробы (текст — в строке цели). Если повторяется, сообщить автору с текстом ошибки.')
+}
+
+$script:EdoWarnings = @{
+    SLOW = @('медленный ответ', ('Сервис работает, но проверка дольше {0} с (большая отправка — {1} с): перегрузка канала, прокси или сервиса. Разовое замедление не страшно; если повторяется — прогнать с -Repeat 5 и сравнить с другим компьютером.' -f ($script:EdoThresholds.SlowMs / 1000), ($script:EdoThresholds.SlowStallMs / 1000)))
+    CERT = @('сертификат сервера скоро истекает', ('До конца сертификата меньше {0} дней. Сервис обычно меняет сертификат сам; если сертификат истечёт, браузер и программы ЭДО перестанут подключаться. Это проблема на стороне сервиса, а не этого компьютера.' -f $script:EdoThresholds.CertDays))
+}
+
+$script:EdoUsage = @'
+EDO Monitor — ручная диагностика доступа к ЭДО и госсервисам с этого компьютера.
+  edo.ps1                                      все цели шаблона Zabbix
+  edo.ps1 -Group FNS,FNSGost                   группы: Kontur, Stall, Gosuslugi, FNS, FNSGost, Taxcom, CRPT
+  edo.ps1 -Target lkul.nalog.ru[:443][/путь]   одна цель по HTTPS (порт 80 — HTTP)
+  edo.ps1 -Gost lkulgost.nalog.ru[:443]        одна ГОСТ-цель (нужен КриптоПро CSP)
+  edo.ps1 -Targets 'Имя|http|хост|443|/;...'   список в формате макроса {$EDO.TARGETS.*}
+  -ViaProxy    http-цели ещё раз через прокси Windows (или WinHTTP)
+  -Repeat N    N проходов подряд (1..100): ловит нестабильность
+  -Out путь    сохранить отчёт в путь.txt и путь.json
+  -Help        эта справка (то же -h, -?)
+-Target, -Gost и -Targets сочетаются друг с другом, но не с -Group.
+Код выхода: 0 — нет FAIL и ERR, 1 — есть FAIL или ERR либо прогон прерван, 2 — неверные ключи.
+'@
+
+# A target checked by the probe's own argument rules; Error says which entry ($Context) is invalid.
+function New-EdoTarget {
+    param([string]$Group, [string]$Name, [string]$Mode, [string]$TargetHost, [string]$Port, [string]$Path, [string]$Context)
+    $t = [pscustomobject]@{ Group = $Group; Name = $Name; Mode = $Mode; Host = $TargetHost; Port = $Port; Path = $Path; Error = $null }
+    $bad = Test-EdoArgs -Mode $Mode -TargetHost $TargetHost -Port $Port -Path $Path
+    if ($bad) { $t.Error = "${Context}: $bad" }
+    $t
+}
+
+# "Name|mode|host|port|path;..." -> targets.
+function ConvertFrom-EdoTargetList {
+    param([string]$Text, [string]$Group = '')
+    foreach ($entry in @($Text -split ';')) {
+        $entry = $entry.Trim()
+        if (-not $entry) { continue }
+        $f = @($entry -split '\|' | ForEach-Object { $_.Trim() })
+        if ($f.Count -ne 5) {
+            $t = New-EdoTarget $Group $f[0] '' '' '' '' ''
+            $t.Error = "запись «$entry»: нужно Имя|mode|host|port|path"
+            $t
+            continue
+        }
+        New-EdoTarget $Group $f[0] $f[1] $f[2] $f[3] $f[4] "запись «$entry»"
+    }
+}
+
+function Get-EdoDefaultTargets {
+    param([string[]]$Groups = @())
+    foreach ($g in @($script:EdoTargets.Keys)) {
+        if ($Groups.Count -gt 0 -and $Groups -notcontains $g) { continue }
+        ConvertFrom-EdoTargetList $script:EdoTargets[$g] $g
+    }
+}
+
+# -Target host[:port][/path] (http) or -Gost host[:port].
+function ConvertFrom-EdoTargetSpec {
+    param([string]$Spec, [string]$Mode)
+    $pattern = '^([^:/]+)(?::([0-9]{1,5}))?(/.*)?\z'
+    if ($Mode -eq 'gost') { $pattern = '^([^:/]+)(?::([0-9]{1,5}))?\z' }
+    if ($Spec -notmatch $pattern) {
+        $t = New-EdoTarget '' $Spec $Mode '' '' '' ''
+        $t.Error = "цель «$Spec»: нужно хост[:порт]$(if ($Mode -eq 'http') { '[/путь]' })"
+        return $t
+    }
+    $port = '443'; if ($Matches[2]) { $port = $Matches[2] }
+    $path = '/'; if ($Matches[3]) { $path = $Matches[3] }
+    New-EdoTarget '' $Matches[1] $Mode $Matches[1] $port $path "цель «$Spec»"
+}
+
+function Get-EdoSelectedTargets {
+    param($Options)
+    $list = @()
+    if ($Options.Target) { $list += ConvertFrom-EdoTargetSpec $Options.Target 'http' }
+    if ($Options.Gost) { $list += ConvertFrom-EdoTargetSpec $Options.Gost 'gost' }
+    if ($Options.Targets) { $list += @(ConvertFrom-EdoTargetList $Options.Targets) }
+    if ($list.Count -gt 0) { return $list }
+    Get-EdoDefaultTargets $Options.Group
+}
+
+# Hand-parsed: a param block would turn the Zabbix call's positional arguments into binding errors. From a console,
+# "-Group a,b" arrives as an array, "-Repeat 3" as an integer and "-Out:x" as "-Out:" plus "x"; through -File all
+# are strings and "-Out:x" stays one token.
+function ConvertFrom-EdoSwitches {
+    param([object[]]$ArgList = @())
+    $o = @{ Error = $null; Help = $false; Group = @(); Target = ''; Gost = ''; Targets = ''; ViaProxy = $false; Repeat = 1; Out = ''; Explicit = $false }
+    $names = @('Group', 'Target', 'Gost', 'Targets', 'Repeat', 'Out', 'ViaProxy', 'Help')
+    $i = 0
+    while ($i -lt $ArgList.Count) {
+        $token = "$($ArgList[$i])"; $i++
+        if ($token -notmatch '^-([A-Za-z?]+)(:(.*))?\z') { $o.Error = "лишнее значение «$token»"; return $o }
+        $name = @($names | Where-Object { $_ -eq $Matches[1] })
+        $inline = $Matches[3]
+        if ($Matches[1] -eq '?' -or $Matches[1] -eq 'h') { $name = @('Help') }
+        if ($name.Count -eq 0) { $o.Error = "неизвестный параметр «$token»"; return $o }
+        $name = $name[0]
+        if ($name -eq 'ViaProxy' -or $name -eq 'Help') {
+            if ($inline) { $o.Error = "у -$name не бывает значения"; return $o }
+            $o[$name] = $true
+            continue
+        }
+        if ($inline) { $value = $inline }
+        else {
+            if ($i -ge $ArgList.Count -or "$($ArgList[$i])".StartsWith('-')) { $o.Error = "у -$name нет значения"; return $o }
+            $value = @($ArgList[$i] | ForEach-Object { "$_" }) -join ','
+            $i++
+        }
+        switch ($name) {
+            'Group' {
+                foreach ($g in @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                    $known = @($script:EdoTargets.Keys | Where-Object { $_ -eq $g })
+                    if ($known.Count -eq 0) { $o.Error = "неизвестная группа «$g»; есть: $(@($script:EdoTargets.Keys) -join ', ')"; return $o }
+                    $o.Group += $known[0]
+                }
+            }
+            'Repeat' {
+                if ($value -notmatch '^[0-9]{1,3}\z' -or [int]$value -lt 1 -or [int]$value -gt 100) { $o.Error = "-Repeat: нужно число от 1 до 100, а не «$value»"; return $o }
+                $o.Repeat = [int]$value
+            }
+            default { $o[$name] = $value; if ($name -ne 'Out') { $o.Explicit = $true } }
+        }
+    }
+    if ($o.Group.Count -gt 0 -and ($o.Target -or $o.Gost -or $o.Targets)) { $o.Error = '-Group выбирает из целей шаблона и не сочетается с -Target, -Gost, -Targets'; return $o }
+    # An empty explicit list must not silently turn into "all template targets".
+    if ($o.Explicit -and @(Get-EdoSelectedTargets $o | Where-Object { -not $_.Group }).Count -eq 0) { $o.Error = 'в -Target, -Gost, -Targets нет ни одной цели'; return $o }
+    $bad = @(Get-EdoSelectedTargets $o | Where-Object { $_.Error } | ForEach-Object { $_.Error })
+    if ($bad.Count -gt 0) { $o.Error = $bad -join '; ' }
+    $o
+}
+
+# Same precedence as the template: failures first, then "cannot check", then the warnings.
+function Get-EdoLabel {
+    param($Result, $Target)
+    $c = [int]$Result.class
+    if ($c -ge 10 -and $c -lt 90) { return 'FAIL' }
+    if ($c -eq 91) { return 'ERR' }
+    if ($c -eq 90) { return 'N/A' }
+    if ($Result.cert_days -ge 0 -and $Result.cert_days -lt $script:EdoThresholds.CertDays) { return 'CERT' }
+    $slow = $script:EdoThresholds.SlowMs
+    if ($Target.Mode -eq 'stall') { $slow = $script:EdoThresholds.SlowStallMs }
+    if ($Result.total_ms -gt $slow) { return 'SLOW' }
+    'OK'
+}
+
+# The template's "mass failure from the host": failing (10..89) >= MIN and >= PCT % of the targets that could be checked.
+function Test-EdoMassFailure {
+    param([object[]]$Results)
+    $failing = @($Results | Where-Object { $_.class -ge 10 -and $_.class -lt 90 }).Count
+    $broken = @($Results | Where-Object { $_.class -ge 90 }).Count
+    $failing -ge $script:EdoThresholds.MassMin -and 100 * $failing -ge $script:EdoThresholds.MassPct * ($Results.Count - $broken)
+}
+
+# Which service a result belongs to: its template group, or for own targets the domain (last two labels).
+function Get-EdoService {
+    param($Record)
+    # The large POST is Kontur, the GOST cabinets are FNS: one provider's outage stays one service.
+    $provider = @{ Stall = 'Kontur'; FNSGost = 'FNS' }
+    if ($Record.group) { $g = $Record.group; if ($provider.ContainsKey($g)) { $g = $provider[$g] }; return $script:EdoGroupTitles[$g] }
+    if ($Record.host -match '^[0-9.]+\z') { return $Record.host }
+    (@($Record.host -split '\.') | Select-Object -Last 2) -join '.'
+}
+
+# Binary WinHttpSettings value (what "netsh winhttp show proxy" prints, without its localized text):
+# DWORD version, DWORD counter, DWORD flags (2 = proxy set), DWORD length, proxy string, then the bypass list.
+function ConvertFrom-EdoWinHttpSettings {
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes -or $Bytes.Length -lt 16) { return '' }
+    $flags = [BitConverter]::ToInt32($Bytes, 8)
+    $length = [BitConverter]::ToInt32($Bytes, 12)
+    if (($flags -band 2) -eq 0 -or $length -le 0 -or 16 + $length -gt $Bytes.Length) { return '' }
+    [Text.Encoding]::ASCII.GetString($Bytes, 16, $length)
+}
+
+# "host:port", "http://host:port" or per scheme "http=a:1;https=b:2" (HTTPS preferred: every EDO target is HTTPS).
+function ConvertTo-EdoProxyUri {
+    param([string]$Text)
+    $pick = $Text.Trim()
+    if ($pick.Contains('=')) {
+        $parts = @{}
+        foreach ($p in @($pick -split ';')) { if ($p -match '^\s*([A-Za-z]+)=(\S+)\s*\z') { $parts[$Matches[1].ToLower()] = $Matches[2] } }
+        $pick = ''
+        foreach ($k in 'https', 'http') { if ($parts.ContainsKey($k)) { $pick = $parts[$k]; break } }
+    }
+    $pick = $pick -split '[;\s]' | Where-Object { $_ } | Select-Object -First 1
+    if (-not $pick) { return $null }
+    if ($pick -notmatch '^[A-Za-z]+://') { $pick = "http://$pick" }
+    New-Object Uri($pick)
+}
+
+function Get-EdoProxyInfo {
+    $info = @{ WinHttp = ''; UserProxy = ''; UserPac = ''; UserAutoDetect = $false }
+    # "Automatically detect settings" (WPAD): flag 0x08 in byte 8 of DefaultConnectionSettings. Often on by default,
+    # so it is shown but does not count as "a proxy is configured".
+    try {
+        $c = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections' -Name DefaultConnectionSettings -ErrorAction Stop
+        $b = [byte[]]$c.DefaultConnectionSettings
+        if ($b.Length -gt 8) { $info.UserAutoDetect = (($b[8] -band 8) -ne 0) }
+    } catch { }
+    try {
+        $w = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections' -Name WinHttpSettings -ErrorAction Stop
+        $info.WinHttp = ConvertFrom-EdoWinHttpSettings $w.WinHttpSettings
+    } catch { }
+    try {
+        $u = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+        $has = @($u.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($has -contains 'ProxyEnable' -and $u.ProxyEnable -eq 1 -and $has -contains 'ProxyServer') { $info.UserProxy = [string]$u.ProxyServer }
+        if ($has -contains 'AutoConfigURL') { $info.UserPac = [string]$u.AutoConfigURL }
+    } catch { }
+    $info
+}
+
+# One GET through the proxy the user's Windows settings pick for this address (static, PAC or WPAD, as .NET resolves
+# them), else through WinHTTP. Returns one line of text.
+function Invoke-EdoProxyFetch {
+    param($Target, [string]$WinHttp, $SystemProxy = [Net.WebRequest]::GetSystemWebProxy())
+    $scheme = 'http'; if (Get-EdoUseTls -Port $Target.Port) { $scheme = 'https' }
+    $uri = New-Object Uri("${scheme}://$($Target.Host):$($Target.Port)$($Target.Path)")
+    $proxyUri = $null; $source = ''
+    # PAC or WPAD resolution can fail too: that is one target's answer, not the end of the run.
+    try {
+        if (-not $SystemProxy.IsBypassed($uri)) { $proxyUri = $SystemProxy.GetProxy($uri); $source = 'прокси Windows' }
+        elseif ($WinHttp) { $proxyUri = ConvertTo-EdoProxyUri $WinHttp; $source = 'прокси WinHTTP' }
+    } catch { return "через прокси: прокси не определён: $(Format-EdoError $_.Exception)" }
+    if ($null -eq $proxyUri) { return 'через прокси: для этого адреса прокси не применяется' }
+    # Windows PowerShell 5.1 leaves TLS 1.2 out of HttpWebRequest unless .NET strong crypto is enabled in the registry;
+    # the direct probe (SslStream) is not affected. SystemDefault (0) already lets the OS choose.
+    $protocols = [Net.ServicePointManager]::SecurityProtocol
+    if ([int]$protocols -ne 0 -and -not ($protocols -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12 }
+    $via = "через $source $($proxyUri.Authority)"
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $response = $null
+    try {
+        $request = [Net.WebRequest]::Create($uri)
+        $proxy = New-Object Net.WebProxy($proxyUri)
+        $proxy.UseDefaultCredentials = $true
+        $request.Proxy = $proxy
+        $request.KeepAlive = $false
+        $request.AllowAutoRedirect = $false
+        $request.Timeout = $script:EdoBudget.Http
+        $request.ReadWriteTimeout = $script:EdoBudget.Http
+        $request.UserAgent = 'edo-monitor'
+        try { $response = $request.GetResponse() }
+        catch {
+            $x = $_.Exception
+            while ($null -ne $x -and -not ($x -is [Net.WebException])) { $x = $x.InnerException }
+            if ($null -eq $x -or $null -eq $x.Response) { throw }
+            $response = $x.Response
+        }
+        $code = [int]$response.StatusCode
+        $text = "HTTP $code"
+        if ($code -eq 407) { $text = 'HTTP 407: прокси требует аутентификацию, которую Windows не передала' }
+        elseif ($code -ge 500) { $text = "HTTP ${code}: ошибка на прокси или сервисе" }
+        "${via}: $text, $($sw.ElapsedMilliseconds) мс"
+    } catch {
+        "${via}: $(Format-EdoError $_.Exception), $($sw.ElapsedMilliseconds) мс"
+    } finally {
+        if ($null -ne $response) { $response.Close() }
+    }
+}
+
+# Outbound Block by default is the usual reason for class 20 on hardened terminal servers.
+function Get-EdoFirewallNote {
+    try {
+        $blocked = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { $_.Enabled -eq 'True' -and "$($_.DefaultOutboundAction)" -eq 'Block' } | ForEach-Object { $_.Name })
+    } catch { return 'Брандмауэр Windows: настройки не прочитаны' }
+    if ($blocked.Count) { return "Брандмауэр Windows: исходящие по умолчанию ЗАПРЕЩЕНЫ (профили $($blocked -join ', ')) — до каждой цели нужно разрешающее правило" }
+    'Брандмауэр Windows: исходящие по умолчанию разрешены'
+}
+
+function Format-EdoLine {
+    param([string]$Label, $Target, $Result)
+    $name = $Target.Name; if ($name.Length -gt 22) { $name = $name.Substring(0, 21) + '…' }
+    $line = '  {0,-4} {1,-22} {2,-32} {3,-15} {4,6} мс' -f $Label, $name, "$($Target.Host):$($Target.Port)", $Result.ip, $Result.total_ms
+    $c = [int]$Result.class
+    if ($c -eq 0) {
+        if ($Target.Mode -eq 'gost') { $line += '  сервер принял ГОСТ TLS (csptest)' }
+        if ($Result.http_code -ge 0) { $line += "  HTTP $($Result.http_code)" }
+        if ($Result.tls_proto) { $line += "  $($Result.tls_proto)" }
+        if ($Result.cert_days -ge 0) { $line += "  серт. $($Result.cert_days) дн." }
+        if ($Label -eq 'CERT') { $line += " ($($Result.cert_issuer))" }
+        if ($Label -eq 'SLOW') { $line += '  медленно' }
+        return $line
+    }
+    $short = $script:EdoAdvice[$c][0]
+    if ($c -eq 23 -and $Result.error -match 'AccessDenied') { $short = 'TCP: запрещено брандмауэром Windows' }
+    $line += "  $short [$c $($Result.class_name)]"
+    if ($Result.error) { $line += ": $($Result.error)" }
+    if ($c -eq 33 -and $Result.cert_issuer) { $line += "; издатель: $($Result.cert_issuer)" }
+    $line
+}
+
+# Returns the exit code. -Probe, -ProxyInfo and -Sink exist for tests; by hand only -ArgList is passed.
+function Invoke-EdoInteractive {
+    param(
+        [object[]]$ArgList = @(),
+        [scriptblock]$Probe = { param($t) Invoke-EdoProbe -Mode $t.Mode -TargetHost $t.Host -Port $t.Port -Path $t.Path },
+        $ProxyInfo = $null,
+        [scriptblock]$Sink = { param($text, $color) if ($color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text } }
+    )
+    $report = New-Object Collections.Generic.List[string]
+    function Out-Line([string]$Text = '', [string]$Color = '') { $report.Add($Text); & $Sink $Text $Color }
+    # Labels in summary order.
+    $colors = [ordered]@{ OK = 'Green'; SLOW = 'Yellow'; CERT = 'Yellow'; FAIL = 'Red'; ERR = 'Red'; 'N/A' = 'DarkGray' }
+    $failed = { $_.label -eq 'FAIL' -or $_.label -eq 'ERR' }
+
+    $o = ConvertFrom-EdoSwitches $ArgList
+    if ($o.Error) { Out-Line "Ошибка: $($o.Error)" 'Red'; Out-Line $script:EdoUsage; return 2 }
+    if ($o.Help) { Out-Line $script:EdoUsage; return 0 }
+    $targets = @(Get-EdoSelectedTargets $o)
+    if ($null -eq $ProxyInfo) { $ProxyInfo = Get-EdoProxyInfo }
+    $anyProxy = [bool]($ProxyInfo.WinHttp -or $ProxyInfo.UserProxy -or $ProxyInfo.UserPac)
+
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $admin = 'без прав администратора'
+    if ((New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $admin = 'администратор' }
+    # Session 0 is services and remoting (WinRM, a scheduled task without a user); a user's RDP session has its own id.
+    $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    $session = "$sessionId"
+    if ($env:SESSIONNAME) { $session = "$env:SESSIONNAME (id $sessionId)" }
+    if ($sessionId -eq 0) { $session = '0 (служба или удалённый запуск: прокси и сертификаты пользователя не видны)' }
+    Out-Line ("EDO Monitor: диагностика с {0} | {1} ({2}) | сессия {3} | {4:yyyy-MM-dd HH:mm}" -f $env:COMPUTERNAME, $id.Name, $admin, $session, (Get-Date)) 'Cyan'
+    $csp = Find-EdoCsptest
+    if (Test-Path -LiteralPath $csp) { Out-Line "КриптоПро CSP: $((Get-Item -LiteralPath $csp).VersionInfo.ProductVersion)" }
+    else { Out-Line 'КриптоПро CSP: не найден — ГОСТ-цели будут N/A' }
+    $userProxy = 'нет'
+    if ($ProxyInfo.UserProxy) { $userProxy = $ProxyInfo.UserProxy }
+    if ($ProxyInfo.UserPac) { $userProxy += "; автонастройка $($ProxyInfo.UserPac)" }
+    if ($ProxyInfo.ContainsKey('UserAutoDetect') -and $ProxyInfo.UserAutoDetect) { $userProxy += '; автоопределение (WPAD) включено' }
+    $winHttp = 'нет'; if ($ProxyInfo.WinHttp) { $winHttp = $ProxyInfo.WinHttp }
+    Out-Line "Прокси пользователя: $userProxy | Прокси WinHTTP: $winHttp"
+    Out-Line (Get-EdoFirewallNote)
+    if ($anyProxy -and -not $o.ViaProxy) { Out-Line 'Проверки идут напрямую, мимо прокси. Путь через прокси покажет -ViaProxy.' 'Yellow' }
+    if ($o.ViaProxy -and -not $anyProxy) { Out-Line 'Прокси не настроен явно: -ViaProxy спросит Windows (автоопределение WPAD, прокси для всего компьютера); где прокси нет, строка скажет «не применяется».' 'Yellow' }
+    # One object for the run: with PAC or WPAD a new one would fetch the script again for every target. Created whenever
+    # -ViaProxy is given: WPAD and per-machine proxies are not visible in the settings read above.
+    $systemProxy = $null; if ($o.ViaProxy) { $systemProxy = [Net.WebRequest]::GetSystemWebProxy() }
+    if (-not ($o.Target -or $o.Gost -or $o.Targets)) { Out-Line 'Цели: значения шаблона Zabbix по умолчанию; переопределения макросов на хосте или группе здесь не видны — передайте их через -Targets.' 'DarkGray' }
+
+    $records = New-Object Collections.ArrayList
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    $failure = ''
+    $finished = $false
+    try {
+        for ($pass = 1; $pass -le $o.Repeat; $pass++) {
+            if ($o.Repeat -gt 1) { Out-Line; Out-Line "Проход $pass из $($o.Repeat)" 'Cyan' }
+            $group = $null
+            foreach ($t in $targets) {
+                # The 256 KB POST goes to someone else's server; the template sends it once an hour.
+                if ($t.Mode -eq 'stall' -and $pass -gt 1) { continue }
+                if ($t.Group -and $t.Group -ne $group) { $group = $t.Group; Out-Line; Out-Line $script:EdoGroupTitles[$group] }
+                $r = & $Probe $t
+                $label = Get-EdoLabel $r $t
+                Out-Line (Format-EdoLine $label $t $r) $colors[$label]
+                $viaProxy = ''
+                if ($systemProxy -and $t.Mode -eq 'http') { $viaProxy = Invoke-EdoProxyFetch $t $ProxyInfo.WinHttp $systemProxy; Out-Line "         $viaProxy" }
+                $rec = [ordered]@{ pass = $pass; group = $t.Group; name = $t.Name; mode = $t.Mode; host = $t.Host; port = $t.Port; path = $t.Path; label = $label }
+                foreach ($k in @($r.Keys)) { $rec[$k] = $r[$k] }
+                $rec['via_proxy'] = $viaProxy
+                [void]$records.Add($rec)
+            }
+            if ($o.Repeat -gt 1) {
+                $bad = @($records | Where-Object { $_.pass -eq $pass } | Where-Object $failed)
+                Out-Line "Проход ${pass}: отказов $($bad.Count)$(if ($bad.Count) { ' — ' + (@($bad | ForEach-Object { $_.host }) -join ', ') })"
+            }
+        }
+        $finished = $true
+    } catch {
+        $failure = Format-EdoError $_.Exception
+    } finally {
+        # Also on Ctrl+C: whatever finished is summarised and saved.
+        Out-Line
+        if (-not $finished) {
+            $why = '.'; if ($failure) { $why = " ошибкой: $failure." }
+            Out-Line "Прогон прерван$why Итог — только по завершённым проверкам." 'Yellow'
+        }
+        $counts = @(foreach ($l in @($colors.Keys)) { $n = @($records | Where-Object { $_.label -eq $l }).Count; if ($n) { "$n $l" } })
+        $summary = "Итог (проверок: $($records.Count), $([int]$elapsed.Elapsed.TotalSeconds) с)"
+        if ($counts.Count) { $summary += ': ' + ($counts -join ', ') }
+        $summaryColor = 'Green'
+        if (@($records | Where-Object $failed).Count) { $summaryColor = 'Red' }
+        elseif (@($records | Where-Object { $_.label -ne 'OK' }).Count) { $summaryColor = 'Yellow' }
+        Out-Line $summary $summaryColor
+
+        $mass = @($records | Group-Object { $_.pass } | Where-Object { Test-EdoMassFailure @($_.Group) })
+        # Many failures of one service (a -Group CRPT run, say) are that service's outage, not the computer's.
+        $failingServices = @($records | Where-Object { $_.class -ge 10 -and $_.class -lt 90 } | ForEach-Object { Get-EdoService $_ } | Select-Object -Unique)
+        if ($mass.Count -and $failingServices.Count -lt 2) {
+            Out-Line "Все отказы — у одного сервиса ($($failingServices -join '')): похоже на сбой или блокировку этого сервиса, а не компьютера. Сравните с другой группой целей или с другого компьютера." 'Red'
+        } elseif ($mass.Count) {
+            if ($anyProxy) { Out-Line 'Массовый отказ: большинство целей недоступно напрямую, а на компьютере настроен прокси. Вероятно, прямой выход в интернет закрыт и пользователи ходят через прокси — проверьте этот путь с -ViaProxy.' 'Red' }
+            else { Out-Line 'Массовый отказ: недоступна большая часть целей сразу — проблема у этого компьютера или его сети (брандмауэр, DNS, прокси, провайдер), а не у сервисов.' 'Red' }
+        }
+
+        if ($o.Repeat -gt 1) {
+            Out-Line 'По целям, удачно/отказ за все проходы:'
+            foreach ($target in @($records | Group-Object { "$($_.name)|$($_.host)" })) {
+                $of = @($target.Group)
+                $okCount = @($of | Where-Object { $_.class -eq 0 }).Count
+                $badCount = @($of | Where-Object $failed).Count
+                $note = ''; $color = ''
+                if ($okCount -and $badCount) { $note = '  нестабильно: то работает, то нет'; $color = 'Yellow' }
+                elseif ($badCount) { $color = 'Red' }
+                Out-Line ('  {0,-22} {1}/{2}{3}' -f $of[0].name, $okCount, $badCount, $note) $color
+            }
+        }
+
+        $classes = @($records | Where-Object { $_.class -ne 0 } | ForEach-Object { [int]$_.class } | Sort-Object -Unique)
+        $warned = @($records | Where-Object { $_.label -eq 'SLOW' -or $_.label -eq 'CERT' })
+        if ($classes.Count -or $warned.Count) {
+            Out-Line
+            Out-Line 'Что делать:'
+            foreach ($l in 'SLOW', 'CERT') {
+                $of = @($warned | Where-Object { $_.label -eq $l } | ForEach-Object { $_.host } | Select-Object -Unique)
+                if ($of.Count -eq 0) { continue }
+                Out-Line "  [$l] $($script:EdoWarnings[$l][0]): $($of -join ', ')"
+                Out-Line "      $($script:EdoWarnings[$l][1])"
+            }
+            foreach ($c in $classes) {
+                # With the address: firewall rules are written for IP and port, not for names.
+                $hosts = @($records | Where-Object { $_.class -eq $c } | ForEach-Object { if ($_.ip) { "$($_.host) ($($_.ip):$($_.port))" } else { $_.host } } | Select-Object -Unique) -join ', '
+                Out-Line "  [$c $($script:EdoClassNames[$c])] $($script:EdoAdvice[$c][0]): $hosts"
+                Out-Line "      $($script:EdoAdvice[$c][1])"
+            }
+        }
+
+        if ($o.Out) {
+            # Relative to the PowerShell location; [IO.File] alone would resolve against the process directory.
+            $base = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(($o.Out -replace '\.(txt|json)\z', ''))
+            try {
+                $utf8 = New-Object Text.UTF8Encoding($true)
+                Out-Line
+                Out-Line "Отчёт: $base.txt, $base.json"
+                [IO.File]::WriteAllLines("$base.txt", $report.ToArray(), $utf8)
+                [IO.File]::WriteAllText("$base.json", (ConvertTo-Json -InputObject @($records) -Depth 5), $utf8)
+            } catch { Out-Line "Не удалось сохранить отчёт: $(Format-EdoError $_.Exception)" 'Red' }
+        }
+    }
+    if ($failure -or @($records | Where-Object $failed).Count) { return 1 }
+    0
+}
+
+# Manual mode by switches is for people. Under LocalSystem (the agent) a first argument starting with "-" stays a
+# probe call and gets class 91 JSON, whatever produced it.
+function Test-EdoManualCall {
+    param([object[]]$ArgList, [bool]$IsSystem)
+    if ($ArgList.Count -eq 0) { return $true }
+    (-not $IsSystem) -and ("$($ArgList[0])" -match '^-[A-Za-z?]')
+}
 if ($MyInvocation.InvocationName -ne '.') {
     $ProgressPreference = 'SilentlyContinue'
     $WarningPreference = 'SilentlyContinue'
+    if (Test-EdoManualCall $args ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem)) {
+        # Exit 1 also when Ctrl+C stops the run: the pipeline then never reaches a normal exit.
+        $code = 1
+        try { $code = Invoke-EdoInteractive -ArgList $args } finally { [Environment]::Exit($code) }
+    }
     try {
         $result = Invoke-EdoProbe -Mode "$($args[0])" -TargetHost "$($args[1])" -Port "$($args[2])" -Path "$($args[3])"
     } catch {
