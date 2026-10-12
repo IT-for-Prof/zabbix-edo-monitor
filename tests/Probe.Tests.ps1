@@ -564,11 +564,62 @@ Describe 'Interactive mode' {
             (Invoke-Interactive @('-Targets', 'A|http|a.example|443|/') $probe).Text | Should -Not -Match 'значения шаблона'
         }
 
-        It 'mass failure with a proxy set points to -ViaProxy' {
+        It 'mass failure across services: proxy set -> points to -ViaProxy' {
             $proxy = @{ WinHttp = ''; UserProxy = 'proxy.local:3128'; UserPac = '' }
-            $r = Invoke-Interactive @('-Group', 'CRPT') { param($t) New-Result 20 5000 -1 } $proxy
-            $r.Text | Should -Match 'Массов'
+            $r = Invoke-Interactive @('-Group', 'CRPT,Taxcom') { param($t) New-Result 20 5000 -1 } $proxy
+            $r.Text | Should -Match 'Массовый отказ: большинство целей недоступно напрямую'
             $r.Text | Should -Match '-ViaProxy'
+        }
+
+        It 'mass failure across services without a proxy blames this computer' {
+            $r = Invoke-Interactive @('-Group', 'CRPT,Taxcom') { param($t) New-Result 20 5000 -1 }
+            $r.Text | Should -Match 'Массовый отказ: недоступна большая часть целей'
+            $r.Text | Should -Not -Match 'большинство целей недоступно напрямую'
+        }
+
+        It 'many failures of one service point to that service, not to the computer' {
+            $r = Invoke-Interactive @('-Group', 'CRPT') { param($t) New-Result 20 5000 -1 }
+            $r.Text | Should -Match 'Все отказы — у одного сервиса \(Честный знак\)'
+            $r.Text | Should -Not -Match 'Массовый отказ'
+        }
+
+        It '<sw> prints usage and returns 0 without probing' -ForEach @(@{ sw = '-Help' }, @{ sw = '-h' }, @{ sw = '-?' }) {
+            $r = Invoke-Interactive @($sw) { throw 'must not probe' }
+            $r.Code | Should -Be 0
+            $r.Text | Should -Match '-ViaProxy'
+        }
+
+        It 'an empty -Targets is an error, not a run of all template targets' {
+            $r = Invoke-Interactive @('-Targets', ' ; ') { throw 'must not probe' }
+            $r.Code | Should -Be 2
+        }
+
+        It 'a relative -Out follows the PowerShell location' {
+            Push-Location $TestDrive
+            try { [void](Invoke-Interactive @('-Targets', 'A|http|a.example|443|/', '-Out', 'rel') { param($t) New-Result 0 }) }
+            finally { Pop-Location }
+            Test-Path -LiteralPath (Join-Path $TestDrive 'rel.txt') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $TestDrive 'rel.json') | Should -BeTrue
+        }
+
+        It 'a stopped pipeline (Ctrl+C) still prints the summary and writes -Out' {
+            $out = Join-Path $TestDrive 'stop'
+            $lines = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
+            $ps = [powershell]::Create()
+            [void]$ps.AddScript({
+                param($probePath, $out, $lines)
+                . $probePath
+                $probe = { param($t) if ($t.Host -eq 'b.example') { Start-Sleep 30 }; $r = New-EdoResult; $r.total_ms = 5; $r }
+                Invoke-EdoInteractive -ArgList @('-Targets', 'A|http|a.example|443|/;B|http|b.example|443|/', '-Out', $out) -Probe $probe -ProxyInfo @{ WinHttp = ''; UserProxy = ''; UserPac = '' } -Sink { param($x) [void]$lines.Add($x) }.GetNewClosure()
+            }).AddArgument($script:ProbePath).AddArgument($out).AddArgument($lines)
+            $handle = $ps.BeginInvoke()
+            $deadline = [DateTime]::Now.AddSeconds(20)
+            while (-not ($lines -match 'a\.example') -and [DateTime]::Now -lt $deadline) { Start-Sleep -Milliseconds 100 }
+            $ps.Stop()
+            $ps.Dispose()
+            ($lines -join "`n") | Should -Match 'Прогон прерван\.'
+            ($lines -join "`n") | Should -Match 'Итог \(проверок: 1'
+            Test-Path -LiteralPath "$out.json" | Should -BeTrue
         }
 
         It 'returns 2 with usage on a bad switch' {
@@ -635,6 +686,40 @@ Describe 'Interactive mode' {
             $r = Invoke-Interactive @('-ViaProxy', '-Targets', 'A|http|a.example|443|/') { param($t) New-Result 0 }
             $r.Code | Should -Be 0
             $r.Text | Should -Match 'прокси не настроен'
+        }
+
+        It 'fetch through a proxy: <case>' -ForEach @(
+            @{ case = 'proxy answers 200'; status = '200 OK'; expect = 'через прокси Windows 127\.0\.0\.1:\d+: HTTP 200' }
+            @{ case = 'proxy wants credentials'; status = '407 Proxy Authentication Required'; expect = 'HTTP 407: прокси требует аутентификацию' }
+            @{ case = 'proxy fails'; status = '502 Bad Gateway'; expect = 'HTTP 502: ошибка на прокси или сервисе' }
+        ) {
+            $s = Start-FakeServer -Behavior ([scriptblock]::Create(@"
+                param(`$client, `$cert)
+                `$ns = `$client.GetStream()
+                `$buf = New-Object byte[] 4096; `$n = `$ns.Read(`$buf, 0, 4096)
+                if (-not [Text.Encoding]::ASCII.GetString(`$buf, 0, `$n).StartsWith('GET http://example.com/')) { return }
+                `$b = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $status``r``nContent-Length: 0``r``nConnection: close``r``n``r``n")
+                `$ns.Write(`$b, 0, `$b.Length); `$ns.Flush(); Start-Sleep -Milliseconds 300
+"@))
+            try {
+                $stub = [pscustomobject]@{ P = [Uri]"http://127.0.0.1:$($s.Port)/" }
+                $stub | Add-Member ScriptMethod IsBypassed { param($u) $false }
+                $stub | Add-Member ScriptMethod GetProxy { param($u) $this.P }
+                $text = Invoke-EdoProxyFetch (New-Target 'http' 80) '' $stub
+            } finally { Stop-FakeServer $s }
+            $text | Should -Match $expect
+        }
+
+        It 'fetch for an address the proxy bypasses and no WinHTTP proxy says so' {
+            $stub = [pscustomobject]@{}
+            $stub | Add-Member ScriptMethod IsBypassed { param($u) $true }
+            Invoke-EdoProxyFetch (New-Target) '' $stub | Should -Match 'прокси не применяется'
+        }
+
+        It 'a failing proxy resolution stays on its target line' {
+            $stub = [pscustomobject]@{}
+            $stub | Add-Member ScriptMethod IsBypassed { param($u) throw 'PAC script error' }
+            Invoke-EdoProxyFetch (New-Target) '' $stub | Should -Match 'прокси не определён.*PAC script error'
         }
 
         It 'reads this host''s proxy settings without throwing' {

@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Run by Zabbix agent2 through UserParameter edo.probe[mode,host,port,path].
-    Always prints exactly one ASCII JSON object and exits with code 0; every failure,
+    With positional arguments (the Zabbix call) it always prints exactly one ASCII JSON object and exits with code 0; every failure,
     including bad arguments, becomes a class code. Nothing is ever written to stderr:
     agent2 glues stderr into the item value and would break every dependent item.
 
@@ -416,7 +416,7 @@ $script:EdoAdvice = @{
 }
 
 $script:EdoWarnings = @{
-    SLOW = @('медленный ответ', 'Сервис работает, но ответ дольше 3 с (большая отправка — 8 с): перегрузка канала, прокси или сервиса. Разовое замедление не страшно; если повторяется — прогнать с -Repeat 5 и сравнить с другим хостом.')
+    SLOW = @('медленный ответ', ('Сервис работает, но ответ дольше {0} с (большая отправка — {1} с): перегрузка канала, прокси или сервиса. Разовое замедление не страшно; если повторяется — прогнать с -Repeat 5 и сравнить с другим хостом.' -f ($script:EdoThresholds.SlowMs / 1000), ($script:EdoThresholds.SlowStallMs / 1000)))
     CERT = @('сертификат сервера скоро истекает', 'Сервис обычно меняет сертификат сам. Если сертификат успеет истечь — браузер и программы ЭДО перестанут подключаться: это проблема на стороне сервиса, не хоста.')
 }
 
@@ -535,6 +535,8 @@ function ConvertFrom-EdoSwitches {
         }
     }
     if ($o.Group.Count -gt 0 -and ($o.Target -or $o.Gost -or $o.Targets)) { $o.Error = '-Group выбирает из целей шаблона и не сочетается с -Target, -Gost, -Targets'; return $o }
+    # An empty explicit list must not silently turn into "all template targets".
+    if (($o.Target -or $o.Gost -or $o.Targets) -and @(Get-EdoSelectedTargets $o | Where-Object { -not $_.Group }).Count -eq 0) { $o.Error = 'в -Target, -Gost, -Targets нет ни одной цели'; return $o }
     $bad = @(Get-EdoSelectedTargets $o | Where-Object { $_.Error } | ForEach-Object { $_.Error })
     if ($bad.Count -gt 0) { $o.Error = $bad -join '; ' }
     $o
@@ -560,6 +562,14 @@ function Test-EdoMassFailure {
     $failing = @($Results | Where-Object { $_.class -ge 10 -and $_.class -lt 90 }).Count
     $broken = @($Results | Where-Object { $_.class -ge 90 }).Count
     $failing -ge $script:EdoThresholds.MassMin -and 100 * $failing -ge $script:EdoThresholds.MassPct * ($Results.Count - $broken)
+}
+
+# Which service a result belongs to: its template group, or for own targets the domain (last two labels).
+function Get-EdoService {
+    param($Record)
+    if ($Record.group) { return $script:EdoGroupTitles[$Record.group] }
+    if ($Record.host -match '^[0-9.]+\z') { return $Record.host }
+    (@($Record.host -split '\.') | Select-Object -Last 2) -join '.'
 }
 
 # Binary WinHttpSettings value (what "netsh winhttp show proxy" prints, without its localized text):
@@ -590,7 +600,14 @@ function ConvertTo-EdoProxyUri {
 }
 
 function Get-EdoProxyInfo {
-    $info = @{ WinHttp = ''; UserProxy = ''; UserPac = '' }
+    $info = @{ WinHttp = ''; UserProxy = ''; UserPac = ''; UserAutoDetect = $false }
+    # "Automatically detect settings" (WPAD): flag 0x08 in byte 8 of DefaultConnectionSettings. Often on by default,
+    # so it is shown but does not count as "a proxy is configured".
+    try {
+        $c = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections' -Name DefaultConnectionSettings -ErrorAction Stop
+        $b = [byte[]]$c.DefaultConnectionSettings
+        if ($b.Length -gt 8) { $info.UserAutoDetect = (($b[8] -band 8) -ne 0) }
+    } catch { }
     try {
         $w = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections' -Name WinHttpSettings -ErrorAction Stop
         $info.WinHttp = ConvertFrom-EdoWinHttpSettings $w.WinHttpSettings
@@ -611,9 +628,16 @@ function Invoke-EdoProxyFetch {
     $scheme = 'http'; if (Get-EdoUseTls -Port $Target.Port) { $scheme = 'https' }
     $uri = New-Object Uri("${scheme}://$($Target.Host):$($Target.Port)$($Target.Path)")
     $proxyUri = $null; $source = ''
-    if (-not $SystemProxy.IsBypassed($uri)) { $proxyUri = $SystemProxy.GetProxy($uri); $source = 'прокси Windows' }
-    elseif ($WinHttp) { $proxyUri = ConvertTo-EdoProxyUri $WinHttp; $source = 'прокси WinHTTP' }
+    # PAC or WPAD resolution can fail too: that is one target's answer, not the end of the run.
+    try {
+        if (-not $SystemProxy.IsBypassed($uri)) { $proxyUri = $SystemProxy.GetProxy($uri); $source = 'прокси Windows' }
+        elseif ($WinHttp) { $proxyUri = ConvertTo-EdoProxyUri $WinHttp; $source = 'прокси WinHTTP' }
+    } catch { return "через прокси: прокси не определён: $(Format-EdoError $_.Exception)" }
     if ($null -eq $proxyUri) { return 'через прокси: для этого адреса прокси не применяется' }
+    # Windows PowerShell 5.1 leaves TLS 1.2 out of HttpWebRequest unless .NET strong crypto is enabled in the registry;
+    # the direct probe (SslStream) is not affected. SystemDefault (0) already lets the OS choose.
+    $protocols = [Net.ServicePointManager]::SecurityProtocol
+    if ([int]$protocols -ne 0 -and -not ($protocols -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12 }
     $via = "через $source $($proxyUri.Authority)"
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $response = $null
@@ -713,13 +737,15 @@ function Invoke-EdoInteractive {
     $userProxy = 'нет'
     if ($ProxyInfo.UserProxy) { $userProxy = $ProxyInfo.UserProxy }
     if ($ProxyInfo.UserPac) { $userProxy += "; автонастройка $($ProxyInfo.UserPac)" }
+    if ($ProxyInfo.ContainsKey('UserAutoDetect') -and $ProxyInfo.UserAutoDetect) { $userProxy += '; автоопределение (WPAD) включено' }
     $winHttp = 'нет'; if ($ProxyInfo.WinHttp) { $winHttp = $ProxyInfo.WinHttp }
     Out-Line "Прокси пользователя: $userProxy | Прокси WinHTTP: $winHttp"
     Out-Line (Get-EdoFirewallNote)
     if ($anyProxy -and -not $o.ViaProxy) { Out-Line 'Проверки идут напрямую, мимо прокси. Путь через прокси покажет -ViaProxy.' 'Yellow' }
-    if ($o.ViaProxy -and -not $anyProxy) { Out-Line 'прокси не настроен: -ViaProxy ничего не добавит, проверки идут напрямую.' 'Yellow' }
-    # One object for the run: with PAC or WPAD a new one would fetch the script again for every target.
-    $systemProxy = $null; if ($o.ViaProxy -and $anyProxy) { $systemProxy = [Net.WebRequest]::GetSystemWebProxy() }
+    if ($o.ViaProxy -and -not $anyProxy) { Out-Line 'Явно прокси не настроен: -ViaProxy спросит Windows (автоопределение WPAD, прокси для всего компьютера); где прокси нет, строка скажет «не применяется».' 'Yellow' }
+    # One object for the run: with PAC or WPAD a new one would fetch the script again for every target. Created whenever
+    # -ViaProxy is given: WPAD and per-machine proxies are not visible in the settings read above.
+    $systemProxy = $null; if ($o.ViaProxy) { $systemProxy = [Net.WebRequest]::GetSystemWebProxy() }
     if (-not ($o.Target -or $o.Gost -or $o.Targets)) { Out-Line 'Цели: значения шаблона Zabbix по умолчанию; переопределения макросов на хосте или группе здесь не видны — передайте их через -Targets.' 'DarkGray' }
 
     $records = New-Object Collections.ArrayList
@@ -768,7 +794,11 @@ function Invoke-EdoInteractive {
         Out-Line $summary $summaryColor
 
         $mass = @($records | Group-Object { $_.pass } | Where-Object { Test-EdoMassFailure @($_.Group) })
-        if ($mass.Count) {
+        # Many failures of one service (a -Group CRPT run, say) are that service's outage, not the computer's.
+        $failingServices = @($records | Where-Object { $_.class -ge 10 -and $_.class -lt 90 } | ForEach-Object { Get-EdoService $_ } | Select-Object -Unique)
+        if ($mass.Count -and $failingServices.Count -lt 2) {
+            Out-Line "Все отказы — у одного сервиса ($($failingServices -join '')): похоже на сбой или блокировку именно его. Сравните с другой группой целей или с другого компьютера." 'Red'
+        } elseif ($mass.Count) {
             if ($anyProxy) { Out-Line 'Массовый отказ: большинство целей недоступно напрямую, а на компьютере настроен прокси. Вероятно, прямой выход в интернет закрыт и пользователи ходят через прокси — проверьте этот путь с -ViaProxy.' 'Red' }
             else { Out-Line 'Массовый отказ: недоступна большая часть целей сразу — проблема у этого компьютера или его сети (брандмауэр, DNS, прокси, провайдер), а не у сервисов.' 'Red' }
         }
@@ -806,7 +836,8 @@ function Invoke-EdoInteractive {
         }
 
         if ($o.Out) {
-            $base = $o.Out -replace '\.(txt|json)\z', ''
+            # Relative to the PowerShell location; [IO.File] alone would resolve against the process directory.
+            $base = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(($o.Out -replace '\.(txt|json)\z', ''))
             try {
                 $utf8 = New-Object Text.UTF8Encoding($true)
                 Out-Line
