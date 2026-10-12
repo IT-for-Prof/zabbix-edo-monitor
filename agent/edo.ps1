@@ -13,8 +13,10 @@
     42 HTTP_TIMEOUT, 50 STALL, 90 GOST_NO_CSP, 91 PROBE_ERROR.
 
     Manual diagnostics: run without arguments, or with switches (-Group, -Target, -Gost,
-    -Targets, -ViaProxy, -Repeat, -Out, -Help), to get a readable table for every target of
-    the template instead of JSON. Exit code 0 no failures, 1 failures, 2 bad switches.
+    -Targets, -ViaProxy, -Repeat, -Out, -Help), to get a readable table instead of JSON: the
+    template's default targets, or your own with -Target, -Gost, -Targets. Exit code 0 no failures,
+    1 failures or an interrupted run (Ctrl+C included), 2 bad switches. Under LocalSystem switches
+    do not select manual mode: a first argument starting with "-" stays a probe call (class 91 JSON).
 
 .NOTES
     itforprof.com by Konstantin Tyutyunnik
@@ -400,24 +402,24 @@ $script:EdoThresholds = @{ SlowMs = 3000; SlowStallMs = 8000; CertDays = 14; Mas
 
 # Per class: what broke, in a few words, and what to do about it.
 $script:EdoAdvice = @{
-    10 = @('DNS: имя не разрешается', 'Хост не получил IPv4-адрес имени. Проверить DNS-серверы в настройках сети (Resolve-DnsName <имя>), доступ к DNS через брандмауэр, фильтрацию DNS у провайдера.')
-    20 = @('TCP: нет ответа', 'Пакеты до адреса не доходят или ответ не возвращается. Проверить исходящее правило брандмауэра Windows и периметра для этого IP и порта, маршрут; блокировку у провайдера (ТСПУ) — сравнить с другим хостом или провайдером.')
-    22 = @('TCP: соединение отклонено', 'На подключение пришёл отказ (RST): порт закрыт на сервере или соединение сбрасывает межсетевой экран по пути. Если так со всех хостов — сервис недоступен; если только с этого — смотреть правила и прокси.')
-    23 = @('TCP: ошибка сети', 'Подключение не началось. AccessDenied — запрет брандмауэра Windows на этом компьютере: нужно разрешающее исходящее правило для указанных IP и порта (или сам адрес сменился и старое правило его не покрывает). Иначе — нет маршрута или сеть недоступна (текст ошибки в строке).')
-    30 = @('TLS: сервер молчит', 'TCP-соединение есть, а TLS-рукопожатие не завершилось за отведённое время: признак DPI/ТСПУ или прокси, удерживающего соединение. Сравнить с другим провайдером. Для ГОСТ-целей — csptest не ответил вовремя.')
+    10 = @('DNS: имя не разрешается', 'Компьютер не получил IPv4-адрес для имени. Проверить DNS-серверы в настройках сети (Resolve-DnsName <имя>), доступ к DNS через брандмауэр, фильтрацию DNS у провайдера.')
+    20 = @('TCP: нет ответа', 'Пакеты до адреса не доходят или ответ не возвращается. Проверить исходящие правила брандмауэра Windows и периметра для указанных IP и порта, маршрут. Блокировку у провайдера (ТСПУ) покажет сравнение с другим компьютером или провайдером.')
+    22 = @('TCP: соединение отклонено', 'На подключение пришёл отказ (RST): порт на сервере закрыт или соединение сбрасывает межсетевой экран по пути. Если так со всех компьютеров — сервис недоступен; если только с этого — проверить правила и прокси.')
+    23 = @('TCP: ошибка сети', 'Подключение не началось. AccessDenied — запрет брандмауэра Windows на этом компьютере: нужно разрешающее исходящее правило для указанных IP и порта. Если правило есть, адрес мог смениться, и правило его не покрывает. Иначе — нет маршрута или сеть недоступна (текст ошибки — в строке цели).')
+    30 = @('TLS: сервер молчит', 'TCP-соединение есть, а TLS-рукопожатие не завершилось вовремя: признак DPI/ТСПУ или прокси, удерживающего соединение. Сравнить с другим провайдером. Для ГОСТ-целей — csptest не ответил вовремя.')
     31 = @('TLS: соединение сброшено', 'Соединение оборвали во время TLS-рукопожатия — типичная фильтрация по имени сервера (SNI): ТСПУ, DLP, межсетевой экран с инспекцией TLS.')
-    32 = @('TLS: рукопожатие не прошло', 'Сервер или посредник отверг TLS. Для ГОСТ-целей — сервер не принял ГОСТ-ClientHello или сбой КриптоПро CSP (код ошибки в строке); для остальных — несовместимые протоколы или шифры на пути.')
-    33 = @('TLS: сертификат не доверенный', 'Сертификат сервера не прошёл проверку Windows. Издатель не сервис, а антивирус, прокси или DLP — включена подмена TLS, нужно исключение для адреса. Издатель Russian Trusted CA — установить корневые сертификаты НУЦ Минцифры.')
-    40 = @('HTTP: ошибка сервера', 'Ответ с кодом 5xx или не по протоколу HTTP. Если так со всех хостов — сбой самого сервиса, проверить его статус; если только с этого — посредник на пути (прокси, фильтр).')
+    32 = @('TLS: рукопожатие не прошло', 'Сервер или посредник отверг TLS. Для ГОСТ-целей — сервер не принял ГОСТ ClientHello или сбой КриптоПро CSP (код ошибки — в строке цели); для остальных — несовместимые протоколы или шифры на пути.')
+    33 = @('TLS: сертификат не доверенный', 'Сертификат сервера не прошёл проверку Windows; издатель — в строке цели. Если издатель — антивирус, прокси или DLP, а не сервис, включена подмена TLS: нужно исключение для адреса. Если издатель — Russian Trusted CA, установить корневые сертификаты НУЦ Минцифры.')
+    40 = @('HTTP: ошибка сервера', 'Ответ с кодом 5xx или не по протоколу HTTP. Если так со всех компьютеров — сбой самого сервиса, проверить его статус; если только с этого — посредник на пути (прокси, фильтр).')
     42 = @('HTTP: нет ответа', 'Запрос отправлен, ответ не пришёл вовремя: перегрузка сервиса или фильтр, задерживающий ответы.')
     50 = @('большая отправка оборвалась', 'Отправка 256 КБ оборвалась или застряла: признак ТСПУ/DPI, режущего объёмные TLS-сессии, или проблем с MTU. У пользователей будет зависать отправка документов и отчётности.')
-    90 = @('нет КриптоПро CSP', 'csptest.exe не найден, ГОСТ-проверка невозможна. Установить КриптоПро CSP, если с хоста работают в ГОСТ-кабинетах ФНС; иначе группу FNSGost здесь не проверять.')
-    91 = @('проверка не выполнена', 'Проба не смогла выполнить проверку: неверная запись цели или ошибка PowerShell (текст в строке). Исправить запись; при повторении сообщить автору с текстом ошибки.')
+    90 = @('нет КриптоПро CSP', 'csptest.exe не найден, ГОСТ-проверка невозможна. Установить КриптоПро CSP, если с этого компьютера работают в ГОСТ-кабинетах ФНС; иначе группу FNSGost здесь не проверять.')
+    91 = @('проверка не выполнена', 'Внутренняя ошибка пробы (текст — в строке цели). Если повторяется, сообщить автору с текстом ошибки.')
 }
 
 $script:EdoWarnings = @{
-    SLOW = @('медленный ответ', ('Сервис работает, но ответ дольше {0} с (большая отправка — {1} с): перегрузка канала, прокси или сервиса. Разовое замедление не страшно; если повторяется — прогнать с -Repeat 5 и сравнить с другим хостом.' -f ($script:EdoThresholds.SlowMs / 1000), ($script:EdoThresholds.SlowStallMs / 1000)))
-    CERT = @('сертификат сервера скоро истекает', 'Сервис обычно меняет сертификат сам. Если сертификат успеет истечь — браузер и программы ЭДО перестанут подключаться: это проблема на стороне сервиса, не хоста.')
+    SLOW = @('медленный ответ', ('Сервис работает, но проверка дольше {0} с (большая отправка — {1} с): перегрузка канала, прокси или сервиса. Разовое замедление не страшно; если повторяется — прогнать с -Repeat 5 и сравнить с другим компьютером.' -f ($script:EdoThresholds.SlowMs / 1000), ($script:EdoThresholds.SlowStallMs / 1000)))
+    CERT = @('сертификат сервера скоро истекает', ('До конца сертификата меньше {0} дней. Сервис обычно меняет сертификат сам; если сертификат истечёт, браузер и программы ЭДО перестанут подключаться. Это проблема на стороне сервиса, а не этого компьютера.' -f $script:EdoThresholds.CertDays))
 }
 
 $script:EdoUsage = @'
@@ -430,7 +432,9 @@ EDO Monitor — ручная диагностика доступа к ЭДО и 
   -ViaProxy    http-цели ещё раз через прокси Windows (или WinHTTP)
   -Repeat N    N проходов подряд (1..100): ловит нестабильность
   -Out путь    сохранить отчёт в путь.txt и путь.json
-Код выхода: 0 — отказов нет, 1 — есть FAIL или ERR, 2 — неверные параметры.
+  -Help        эта справка (то же -h, -?)
+-Target, -Gost и -Targets сочетаются друг с другом, но не с -Group.
+Код выхода: 0 — нет FAIL и ERR, 1 — есть FAIL или ERR либо прогон прерван, 2 — неверные ключи.
 '@
 
 # A target checked by the probe's own argument rules; Error says which entry ($Context) is invalid.
@@ -497,7 +501,7 @@ function Get-EdoSelectedTargets {
 # are strings and "-Out:x" stays one token.
 function ConvertFrom-EdoSwitches {
     param([object[]]$ArgList = @())
-    $o = @{ Error = $null; Help = $false; Group = @(); Target = ''; Gost = ''; Targets = ''; ViaProxy = $false; Repeat = 1; Out = '' }
+    $o = @{ Error = $null; Help = $false; Group = @(); Target = ''; Gost = ''; Targets = ''; ViaProxy = $false; Repeat = 1; Out = ''; Explicit = $false }
     $names = @('Group', 'Target', 'Gost', 'Targets', 'Repeat', 'Out', 'ViaProxy', 'Help')
     $i = 0
     while ($i -lt $ArgList.Count) {
@@ -531,12 +535,12 @@ function ConvertFrom-EdoSwitches {
                 if ($value -notmatch '^[0-9]{1,3}\z' -or [int]$value -lt 1 -or [int]$value -gt 100) { $o.Error = "-Repeat: нужно число от 1 до 100, а не «$value»"; return $o }
                 $o.Repeat = [int]$value
             }
-            default { $o[$name] = $value }
+            default { $o[$name] = $value; if ($name -ne 'Out') { $o.Explicit = $true } }
         }
     }
     if ($o.Group.Count -gt 0 -and ($o.Target -or $o.Gost -or $o.Targets)) { $o.Error = '-Group выбирает из целей шаблона и не сочетается с -Target, -Gost, -Targets'; return $o }
     # An empty explicit list must not silently turn into "all template targets".
-    if (($o.Target -or $o.Gost -or $o.Targets) -and @(Get-EdoSelectedTargets $o | Where-Object { -not $_.Group }).Count -eq 0) { $o.Error = 'в -Target, -Gost, -Targets нет ни одной цели'; return $o }
+    if ($o.Explicit -and @(Get-EdoSelectedTargets $o | Where-Object { -not $_.Group }).Count -eq 0) { $o.Error = 'в -Target, -Gost, -Targets нет ни одной цели'; return $o }
     $bad = @(Get-EdoSelectedTargets $o | Where-Object { $_.Error } | ForEach-Object { $_.Error })
     if ($bad.Count -gt 0) { $o.Error = $bad -join '; ' }
     $o
@@ -567,7 +571,9 @@ function Test-EdoMassFailure {
 # Which service a result belongs to: its template group, or for own targets the domain (last two labels).
 function Get-EdoService {
     param($Record)
-    if ($Record.group) { return $script:EdoGroupTitles[$Record.group] }
+    # The large POST is Kontur, the GOST cabinets are FNS: one provider's outage stays one service.
+    $provider = @{ Stall = 'Kontur'; FNSGost = 'FNS' }
+    if ($Record.group) { $g = $Record.group; if ($provider.ContainsKey($g)) { $g = $provider[$g] }; return $script:EdoGroupTitles[$g] }
     if ($Record.host -match '^[0-9.]+\z') { return $Record.host }
     (@($Record.host -split '\.') | Select-Object -Last 2) -join '.'
 }
@@ -742,7 +748,7 @@ function Invoke-EdoInteractive {
     Out-Line "Прокси пользователя: $userProxy | Прокси WinHTTP: $winHttp"
     Out-Line (Get-EdoFirewallNote)
     if ($anyProxy -and -not $o.ViaProxy) { Out-Line 'Проверки идут напрямую, мимо прокси. Путь через прокси покажет -ViaProxy.' 'Yellow' }
-    if ($o.ViaProxy -and -not $anyProxy) { Out-Line 'Явно прокси не настроен: -ViaProxy спросит Windows (автоопределение WPAD, прокси для всего компьютера); где прокси нет, строка скажет «не применяется».' 'Yellow' }
+    if ($o.ViaProxy -and -not $anyProxy) { Out-Line 'Прокси не настроен явно: -ViaProxy спросит Windows (автоопределение WPAD, прокси для всего компьютера); где прокси нет, строка скажет «не применяется».' 'Yellow' }
     # One object for the run: with PAC or WPAD a new one would fetch the script again for every target. Created whenever
     # -ViaProxy is given: WPAD and per-machine proxies are not visible in the settings read above.
     $systemProxy = $null; if ($o.ViaProxy) { $systemProxy = [Net.WebRequest]::GetSystemWebProxy() }
@@ -797,7 +803,7 @@ function Invoke-EdoInteractive {
         # Many failures of one service (a -Group CRPT run, say) are that service's outage, not the computer's.
         $failingServices = @($records | Where-Object { $_.class -ge 10 -and $_.class -lt 90 } | ForEach-Object { Get-EdoService $_ } | Select-Object -Unique)
         if ($mass.Count -and $failingServices.Count -lt 2) {
-            Out-Line "Все отказы — у одного сервиса ($($failingServices -join '')): похоже на сбой или блокировку именно его. Сравните с другой группой целей или с другого компьютера." 'Red'
+            Out-Line "Все отказы — у одного сервиса ($($failingServices -join '')): похоже на сбой или блокировку этого сервиса, а не компьютера. Сравните с другой группой целей или с другого компьютера." 'Red'
         } elseif ($mass.Count) {
             if ($anyProxy) { Out-Line 'Массовый отказ: большинство целей недоступно напрямую, а на компьютере настроен прокси. Вероятно, прямой выход в интернет закрыт и пользователи ходят через прокси — проверьте этот путь с -ViaProxy.' 'Red' }
             else { Out-Line 'Массовый отказ: недоступна большая часть целей сразу — проблема у этого компьютера или его сети (брандмауэр, DNS, прокси, провайдер), а не у сервисов.' 'Red' }

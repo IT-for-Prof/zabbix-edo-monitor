@@ -577,6 +577,17 @@ Describe 'Interactive mode' {
             $r.Text | Should -Not -Match 'большинство целей недоступно напрямую'
         }
 
+        It 'FNS with its GOST cabinets is one service, so is Kontur with its large POST' {
+            $r = Invoke-Interactive @('-Group', 'FNS,FNSGost') { param($t) New-Result 20 5000 -1 }
+            $r.Text | Should -Match 'Все отказы — у одного сервиса \(ФНС\)'
+            $r = Invoke-Interactive @('-Group', 'Kontur,Stall') { param($t) New-Result 20 5000 -1 }
+            $r.Text | Should -Match 'Все отказы — у одного сервиса \(Контур\)'
+        }
+
+        It 'an explicitly empty -Targets is an error: <case>' -ForEach @(@{ case = 'empty string'; v = '' }, @{ case = 'only separators'; v = ' ; ' }) {
+            (Invoke-Interactive @('-Targets', $v) { throw 'must not probe' }).Code | Should -Be 2
+        }
+
         It 'many failures of one service point to that service, not to the computer' {
             $r = Invoke-Interactive @('-Group', 'CRPT') { param($t) New-Result 20 5000 -1 }
             $r.Text | Should -Match 'Все отказы — у одного сервиса \(Честный знак\)'
