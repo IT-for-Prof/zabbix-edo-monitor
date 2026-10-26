@@ -459,14 +459,14 @@ Describe 'Triggers' {
     It 'the failure period macro is a Zabbix count long enough for the host summary to win the race' {
         Get-MacroValue '{$EDO.FAIL.PERIOD}' | Should -Match '^#\d+$'
         # The host summary needs up to one interval plus a minute to see a mass failure; with #2 a target's second
-        # failure arrives just as late, and per-target High would race the host trigger.
+        # failure arrives just as late, and the per-target trigger would race the host trigger.
         [int](Get-MacroValue '{$EDO.FAIL.PERIOD}').TrimStart('#') | Should -BeGreaterOrEqual 3
     }
 
-    It 'per target: two Average (no data, check impossible), one High, three dashboard Warnings' {
+    It 'per target: three Average (no data, check impossible, unavailable), three dashboard Warnings; High only for the host' {
         $p = @($script:Rule.trigger_prototypes)
-        @($p | Where-Object priority -eq 'AVERAGE' | ForEach-Object name | Sort-Object) | Should -Be @('EDO {#NAME}: нет данных пробы', 'EDO {#NAME}: проверка невозможна')
-        @($p | Where-Object priority -eq 'HIGH').Count | Should -Be 1
+        @($p | Where-Object priority -eq 'AVERAGE' | ForEach-Object name | Sort-Object) | Should -Be @('EDO {#NAME}: недоступен несколько проверок подряд', 'EDO {#NAME}: нет данных пробы', 'EDO {#NAME}: проверка невозможна')
+        @($p | Where-Object priority -eq 'HIGH').Count | Should -Be 0
         @($p | Where-Object priority -eq 'WARNING').Count | Should -Be 3
         @($p).Count | Should -Be 6
     }
@@ -487,12 +487,12 @@ Describe 'Triggers' {
         foreach ($t in @($script:Rule.trigger_prototypes | Where-Object priority -eq 'WARNING')) { Assert-DependsOn $t @($noData, $impossible) }
     }
 
-    It 'the High trigger fires only on network or service classes and closes only on a successful check' {
-        $high = @($script:Rule.trigger_prototypes | Where-Object priority -eq 'HIGH')[0]
-        $high.expression | Should -Match 'min\(/[^)]*edo\.class[^)]*,\{\$EDO\.FAIL\.PERIOD\}\)>0'
-        $high.expression | Should -Match 'max\(/[^)]*edo\.class[^)]*,\{\$EDO\.FAIL\.PERIOD\}\)<90'
+    It 'the unavailable trigger fires only on network or service classes and closes only on a successful check' {
+        $down = Get-Trigger 'EDO {#NAME}: недоступен несколько проверок подряд'
+        $down.expression | Should -Match 'min\(/[^)]*edo\.class[^)]*,\{\$EDO\.FAIL\.PERIOD\}\)>0'
+        $down.expression | Should -Match 'max\(/[^)]*edo\.class[^)]*,\{\$EDO\.FAIL\.PERIOD\}\)<90'
         # Without it a 90-91 value or a lone success inside the window closed the problem while the service was still down.
-        $high.recovery_expression | Should -Match '^last\(/[^)]*edo\.class\[[^)]*\]\)=0$'
+        $down.recovery_expression | Should -Match '^last\(/[^)]*edo\.class\[[^)]*\]\)=0$'
     }
 
     It 'dashboard Warnings do not flap on a single failed check' {

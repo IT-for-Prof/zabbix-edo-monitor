@@ -21,7 +21,7 @@ zabbix_export:
         Repo:    https://github.com/IT-for-Prof/zabbix-edo-monitor
       vendor:
         name: itforprof.com
-        version: 1.4.0
+        version: 1.4.1
       groups:
         - name: Templates/Custom
       items:
@@ -248,7 +248,7 @@ zabbix_export:
               opdata: 'Класс: {ITEM.LASTVALUE1}'
               url_name: 'Последние данные цели'
               url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
-              priority: HIGH
+              priority: AVERAGE
               description: |
                 Все проверки за период {$EDO.FAIL.PERIOD} закончились сетевым или сервисным отказом. Закрывается только успешной проверкой (класс 0): класс 90–91 или пропуск данных посреди отказа проблему не закрывают. У новой цели, пока проверок меньше, чем в периоде, триггер считает по тем, что есть. Если отказ общий для хоста, вместо этого триггера поднимается «массовый отказ с хоста».
 
@@ -440,7 +440,7 @@ zabbix_export:
           description: 'Порог Warning «сертификат истекает», дней. Для одной цели — контекст по host: {$EDO.CERT.DAYS:"host"}.'
         - macro: '{$EDO.FAIL.PERIOD}'
           value: '#3'
-          description: 'Период для High «недоступен», Warning «медленно» и «нестабилен» в формате Zabbix: #3 — последние три проверки. Целиком макрос, а не #{$MACRO}: Zabbix 7.0 не принимает макрос внутри счётчика функции.'
+          description: 'Период для Average «недоступен», Warning «медленно» и «нестабилен» в формате Zabbix: #3 — последние три проверки. Целиком макрос, а не #{$MACRO}: Zabbix 7.0 не принимает макрос внутри счётчика функции.'
         - macro: '{$EDO.INTERVAL}'
           value: 15m
           description: 'Интервал проверки цели: редко, чтобы не шуметь и не попасть под лимиты сервисов; с {$EDO.FAIL.PERIOD}=#3 отказ цели поднимается через 30–45 минут. Для режима — контекст: {$EDO.INTERVAL:"stall"}.'
