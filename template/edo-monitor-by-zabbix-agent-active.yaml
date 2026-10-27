@@ -21,7 +21,7 @@ zabbix_export:
         Repo:    https://github.com/IT-for-Prof/zabbix-edo-monitor
       vendor:
         name: itforprof.com
-        version: 1.4.1
+        version: 1.4.2
       groups:
         - name: Templates/Custom
       items:
@@ -242,7 +242,7 @@ zabbix_export:
             - uuid: 388cf6bda52b428396525ad7dd36d2b5
               expression: 'min(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})>0 and max(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.FAIL.PERIOD})<90'
               recovery_mode: RECOVERY_EXPRESSION
-              recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}])=0'
+              recovery_expression: 'max(/EDO Monitor by Zabbix agent active/edo.class[{#MODE},{#HOST},{#PORT},{#PATH}],{$EDO.RECOVERY.PERIOD:"{#MODE}"})=0'
               name: 'EDO {#NAME}: недоступен несколько проверок подряд'
               event_name: 'EDO {#NAME} ({#HOST}) недоступен с {HOST.NAME}: {ITEM.LASTVALUE1}'
               opdata: 'Класс: {ITEM.LASTVALUE1}'
@@ -250,7 +250,7 @@ zabbix_export:
               url: 'zabbix.php?action=latest.view&hostids%5B%5D={HOST.ID}&tags%5B0%5D%5Btag%5D=endpoint&tags%5B0%5D%5Boperator%5D=1&tags%5B0%5D%5Bvalue%5D={#HOST}&filter_set=1'
               priority: AVERAGE
               description: |
-                Все проверки за период {$EDO.FAIL.PERIOD} закончились сетевым или сервисным отказом. Закрывается только успешной проверкой (класс 0): класс 90–91 или пропуск данных посреди отказа проблему не закрывают. У новой цели, пока проверок меньше, чем в периоде, триггер считает по тем, что есть. Если отказ общий для хоста, вместо этого триггера поднимается «массовый отказ с хоста».
+                Все проверки за период {$EDO.FAIL.PERIOD} закончились сетевым или сервисным отказом. Закрывается только успешными проверками (класс 0) подряд за период {$EDO.RECOVERY.PERIOD:"{#MODE}"}: одиночный успех посреди перемежающегося отказа, класс 90–91 или пропуск данных проблему не закрывают. У новой цели, пока проверок меньше, чем в периоде, триггер считает по тем, что есть. Если отказ общий для хоста, вместо этого триггера поднимается «массовый отказ с хоста».
 
                 Что делать по классу (поле error — в истории «ответ пробы»):
                 - 10 DNS_FAIL — проверить DNS хоста (Resolve-DnsName <host> от имени сервера); имя цели могло смениться;
@@ -465,6 +465,12 @@ zabbix_export:
         - macro: '{$EDO.NODATA:"stall"}'
           value: 3h
           description: 'Окно без данных для режима stall; больше {$EDO.INTERVAL:"stall"}.'
+        - macro: '{$EDO.RECOVERY.PERIOD}'
+          value: '#4'
+          description: 'Сколько успешных проверок подряд закрывают Average «недоступен», в формате Zabbix: #4 — проблема закрывается через 45 минут после первой удачи при {$EDO.INTERVAL}=15m. Для режима — контекст: {$EDO.RECOVERY.PERIOD:"stall"}. Одна успешная проверка посреди перемежающегося отказа проблему не закрывает: Такском 26–27.10.2026 отказывал сериями до 5 ч с редкими успехами, и закрытие по одной удаче давало 19 пар PROBLEM/RESOLVED вместо 7. Обнаружение отказа не задерживает: его задаёт {$EDO.FAIL.PERIOD}.'
+        - macro: '{$EDO.RECOVERY.PERIOD:"stall"}'
+          value: '#2'
+          description: 'Закрытие «недоступен» для большого POST: при интервале 1h #4 закрывал бы проблему через 3 ч после восстановления, #2 — через час.'
         - macro: '{$EDO.SCRIPT.MD5}'
           value: 23dcb8de2b50c93845a7e61f2b474657
           description: 'MD5 текущей версии agent/edo.ps1 (в CRLF, как после checkout). Меняется вместе со скриптом; расхождение на хосте — Average.'

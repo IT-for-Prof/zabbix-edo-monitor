@@ -487,12 +487,24 @@ Describe 'Triggers' {
         foreach ($t in @($script:Rule.trigger_prototypes | Where-Object priority -eq 'WARNING')) { Assert-DependsOn $t @($noData, $impossible) }
     }
 
-    It 'the unavailable trigger fires only on network or service classes and closes only on a successful check' {
+    It 'the unavailable trigger fires only on network or service classes and closes only after a run of successful checks' {
         $down = Get-Trigger 'EDO {#NAME}: недоступен несколько проверок подряд'
         $down.expression | Should -Match 'min\(/[^)]*edo\.class[^)]*,\{\$EDO\.FAIL\.PERIOD\}\)>0'
         $down.expression | Should -Match 'max\(/[^)]*edo\.class[^)]*,\{\$EDO\.FAIL\.PERIOD\}\)<90'
-        # Without it a 90-91 value or a lone success inside the window closed the problem while the service was still down.
-        $down.recovery_expression | Should -Match '^last\(/[^)]*edo\.class\[[^)]*\]\)=0$'
+        # A 90-91 value inside the window must not close the problem while the service is still down. A lone success
+        # must not either: Taxcom on 26-27.10.2026 failed in runs of up to 5 h broken by single successes, and closing
+        # on last()=0 sent 19 PROBLEM/RESOLVED pairs where closing after 4 successes sends 7.
+        $down.recovery_expression | Should -Match '^max\(/[^)]*edo\.class\[[^)]*\],\{\$EDO\.RECOVERY\.PERIOD:"\{#MODE\}"\}\)=0$'
+    }
+
+    It 'the recovery period is a Zabbix count of at least two checks, an hour or less after the first success' {
+        foreach ($name in @('{$EDO.RECOVERY.PERIOD}', '{$EDO.RECOVERY.PERIOD:"stall"}')) {
+            Get-MacroValue $name | Should -Match '^#\d+$' -Because $name
+            [int](Get-MacroValue $name).TrimStart('#') | Should -BeGreaterOrEqual 2 -Because $name
+        }
+        # Stall checks run hourly: #4 there would hold a recovered problem open for 3 h.
+        $stall = [int](Get-MacroValue '{$EDO.RECOVERY.PERIOD:"stall"}').TrimStart('#')
+        (($stall - 1) * (ConvertTo-Seconds (Get-MacroValue '{$EDO.INTERVAL:"stall"}'))) | Should -BeLessOrEqual 3600
     }
 
     It 'dashboard Warnings do not flap on a single failed check' {
