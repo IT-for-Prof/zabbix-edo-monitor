@@ -21,7 +21,7 @@ zabbix_export:
         Repo:    https://github.com/IT-for-Prof/zabbix-edo-monitor
       vendor:
         name: itforprof.com
-        version: 1.4.2
+        version: 1.5.1
       groups:
         - name: Templates/Custom
       items:
@@ -112,6 +112,45 @@ zabbix_export:
           tags:
             - tag: component
               value: summary
+        - uuid: 3b4c7301fca24e0caac697a7c11d9bdc
+          name: 'EDO: целей Диадока'
+          type: CALCULATED
+          key: edo.diadoc.targets
+          delay: 1m
+          history: 7d
+          params: 'sum(exists_foreach(//edo.class[*,*,*,*]?[(tag="service:Диадок" or tag="service:Диадок API" or tag="service:Диадок EDI" or tag="service:Диадок EDI API")]))'
+          description: 'Обнаруженные цели Диадока по тегам service: Диадок, Диадок API, Диадок EDI и Диадок EDI API. Если целей меньше четырёх, агрегатный отказ не поднимается: сначала нужно восстановить обнаружение.'
+          tags:
+            - tag: component
+              value: summary
+            - tag: service
+              value: Диадок
+        - uuid: 11bf06974a1a4d33a0d8517c740de8bb
+          name: 'EDO: недоступных целей Диадока'
+          type: CALCULATED
+          key: edo.diadoc.failing
+          delay: 1m
+          history: 7d
+          params: 'count(last_foreach(//edo.class[*,*,*,*]?[(tag="service:Диадок" or tag="service:Диадок API" or tag="service:Диадок EDI" or tag="service:Диадок EDI API")],{$EDO.MASS.PERIOD}),"ge",10)-count(last_foreach(//edo.class[*,*,*,*]?[(tag="service:Диадок" or tag="service:Диадок API" or tag="service:Диадок EDI" or tag="service:Диадок EDI API")],{$EDO.MASS.PERIOD}),"ge",90)'
+          description: 'Цели Диадока с классом 10–50 за окно {$EDO.MASS.PERIOD}. Классы 90–91 и устаревшие значения исключены: они означают проблему самой пробы, а не недоступность сервиса.'
+          tags:
+            - tag: component
+              value: summary
+            - tag: service
+              value: Диадок
+        - uuid: c93055bfa73c4aa6b92fed3952dca0a5
+          name: 'EDO: успешных целей Диадока'
+          type: CALCULATED
+          key: edo.diadoc.ok
+          delay: 1m
+          history: 7d
+          params: 'count(last_foreach(//edo.class[*,*,*,*]?[(tag="service:Диадок" or tag="service:Диадок API" or tag="service:Диадок EDI" or tag="service:Диадок EDI API")],{$EDO.DIADOC.RECOVERY}),"eq",0)'
+          description: 'Цели Диадока с успешным классом 0 за окно {$EDO.DIADOC.RECOVERY}. Используется для закрытия агрегата только после успешных проверок всех четырёх целей.'
+          tags:
+            - tag: component
+              value: summary
+            - tag: service
+              value: Диадок
       discovery_rules:
         - uuid: b2ede4b291b248b8bfb911d1339604fc
           name: 'EDO: обнаружение целей'
@@ -450,9 +489,15 @@ zabbix_export:
         - macro: '{$EDO.MASS.MIN}'
           value: '3'
           description: 'Минимум целей для хостовых триггеров «массовый отказ» и «проба не работает на хосте»: на хосте с одной-двумя целями отказ цели не превращается в отказ хоста.'
+        - macro: '{$EDO.DIADOC.TARGETS}'
+          value: '4'
+          description: 'Ожидаемое число целей Диадока: Диадок, Диадок API, Диадок EDI и Диадок EDI API. Если число изменится, обновить список тегов и этот порог вместе.'
+        - macro: '{$EDO.DIADOC.RECOVERY}'
+          value: 45m
+          description: 'Временное окно успешных проверок для закрытия агрегата Диадока. 45 минут соответствуют четырём успешным проверкам при интервале 15 минут; это отдельный duration-макрос, а не счётчик #4.'
         - macro: '{$EDO.MASS.PCT}'
           value: '50'
-          description: 'Доля целей хоста, %, с отказом (10–50) для High «массовый отказ с хоста» или с классом 90–91 для Average «проба не работает на хосте». 50: отказ одного Контура (13 из 28 целей) остаётся отказом сервиса по целям, а пропажа сети или DNS на хосте — одна проблема.'
+          description: 'Доля целей хоста, %, с отказом (10–50) для High «массовый отказ с хоста» или с классом 90–91 для Average «проба не работает на хосте». 50: отказ одного Контура (12 из 27 целей) остаётся отказом сервиса по целям, а пропажа сети или DNS на хосте — одна проблема.'
         - macro: '{$EDO.MASS.PERIOD}'
           value: 20m
           description: 'Сколько доля целей с отказом должна держаться, чтобы поднялся High «массовый отказ с хоста». Больше {$EDO.INTERVAL}: нужны два плохих круга подряд, один сбойный круг не поднимает тревогу.'
@@ -472,7 +517,7 @@ zabbix_export:
           value: '#2'
           description: 'Закрытие «недоступен» для большого POST: при интервале 1h #4 закрывал бы проблему через 3 ч после восстановления, #2 — через час.'
         - macro: '{$EDO.SCRIPT.MD5}'
-          value: 23dcb8de2b50c93845a7e61f2b474657
+          value: 56af0a8d5cea965c7445ce87aa1fa0c0
           description: 'MD5 текущей версии agent/edo.ps1 (в CRLF, как после checkout). Меняется вместе со скриптом; расхождение на хосте — Average.'
         - macro: '{$EDO.SLOW.MS}'
           value: '3000'
@@ -481,7 +526,7 @@ zabbix_export:
           value: '8000'
           description: 'Порог «медленно» для большого POST: 256 КБ на медленном канале законно дольше {$EDO.SLOW.MS}. Меньше бюджета фазы пробы (9 с): выгрузка дольше него уже класс 50, и порог выше был бы недостижим. В норме 1,6–1,8 с.'
         - macro: '{$EDO.TARGETS.CRPT}'
-          value: 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак СУЗ API|http|suz.crpt.ru|443|/;Честный знак сайт|http|crpt.ru|443|/'
+          value: 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак СУЗ API|http|suzgrid.crpt.ru|443|/api/v3/;Честный знак сайт|http|crpt.ru|443|/'
           description: 'Цели Честного знака (ЦРПТ). Запись «Имя|mode|host|port|path», разделитель «;». Пусто — группа выключена.'
         - macro: '{$EDO.TARGETS.EXTRA}'
           description: 'Добавочные цели офиса или хоста, в том же формате. Задаётся на группе хостов или хосте.'
@@ -495,7 +540,7 @@ zabbix_export:
           value: 'Госуслуги|http|www.gosuslugi.ru|443|/;ЕСИА|http|esia.gosuslugi.ru|443|/'
           description: 'Цели Госуслуг.'
         - macro: '{$EDO.TARGETS.KONTUR}'
-          value: 'Контур Auth|http|auth.kontur.ru|443|/_status/ping;Контур API|http|api.kontur.ru|443|/robots.txt;Контур Identity|http|identity.kontur.ru|443|/;Контур Update|http|update.kontur.ru|443|/_status/ping;УЦ Контур|http|pki.skbkontur.ru|80|/ping;УЦ Контур ЛК|http|ca.kontur.ru|443|/robots.txt;Диадок|http|diadoc.kontur.ru|443|/_status/ping;Диадок API|http|diadoc-api.kontur.ru|443|/_status/ping;Диадок EDI|http|edi.kontur.ru|443|/_status/ping;Диадок EDI API|http|edi-api.kontur.ru|443|/_status/ping;Экстерн|http|extern.kontur.ru|443|/;Экстерн CDN|http|cdn.kontur.host|443|/environments/Prod/bundles/connection-check/files/;Контур МЧД|http|m4d.kontur.ru|443|/'
+          value: 'Контур Auth|http|auth.kontur.ru|443|/_status/ping;Контур API|http|api.kontur.ru|443|/robots.txt;Контур Identity|http|identity.kontur.ru|443|/;УЦ Контур|http|pki.skbkontur.ru|80|/ping;УЦ Контур ЛК|http|ca.kontur.ru|443|/robots.txt;Диадок|http|diadoc.kontur.ru|443|/_status/ping;Диадок API|http|diadoc-api.kontur.ru|443|/_status/ping;Диадок EDI|http|edi.kontur.ru|443|/_status/ping;Диадок EDI API|http|edi-api.kontur.ru|443|/_status/ping;Экстерн|http|extern.kontur.ru|443|/;Экстерн CDN|http|cdn.kontur.host|443|/environments/Prod/bundles/connection-check/files/;Контур МЧД|http|m4d.kontur.ru|443|/'
           description: 'Цели Контура, сверены с профилями diadoc, ke, m4d страницы help.kontur.ru/check.'
         - macro: '{$EDO.TARGETS.STALL}'
           value: 'Контур большой POST|stall|help.kontur.ru|443|/check/post'
@@ -593,3 +638,27 @@ zabbix_export:
       tags:
         - tag: scope
           value: data-collection
+    - uuid: 1337224c36d54c2fbb11ff9e7f3e9375
+      expression: 'last(/EDO Monitor by Zabbix agent active/edo.diadoc.targets)={$EDO.DIADOC.TARGETS} and min(/EDO Monitor by Zabbix agent active/edo.diadoc.failing,{$EDO.MASS.PERIOD})>0 and not (min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.MIN} and 100*min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken)))'
+      recovery_mode: RECOVERY_EXPRESSION
+      recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.diadoc.targets)<{$EDO.DIADOC.TARGETS} or min(/EDO Monitor by Zabbix agent active/edo.diadoc.ok,{$EDO.DIADOC.RECOVERY})={$EDO.DIADOC.TARGETS}'
+      name: 'EDO: Диадок недоступен'
+      event_name: 'EDO: Диадок недоступен с {HOST.NAME}'
+      opdata: 'Отказавших целей: {ITEM.LASTVALUE2} из {ITEM.LASTVALUE1}'
+      priority: AVERAGE
+      description: |
+        Все четыре цели Диадока обнаружены, и хотя бы одна из них непрерывно отказывает за {$EDO.MASS.PERIOD}. Отдельные проблемы целей остаются источником подробностей; при массовом отказе хоста этот агрегат подавляется зависимостью.
+
+        Что делать: открыть последние данные по тегу service=Диадок, сравнить класс и IP отказавшей цели, затем выполнить direct/proxy-проверку из README.
+      manual_close: 'YES'
+      dependencies:
+        - name: 'EDO: массовый отказ с хоста'
+          expression: 'min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.MIN} and 100*min(/EDO Monitor by Zabbix agent active/edo.targets.failing,{$EDO.MASS.PERIOD})>={$EDO.MASS.PCT}*(last(/EDO Monitor by Zabbix agent active/edo.targets.total)-last(/EDO Monitor by Zabbix agent active/edo.targets.broken))'
+        - name: 'EDO: проба не работает на хосте'
+          expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.reporting)=0 or (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.MIN} and 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)>={$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+          recovery_expression: 'last(/EDO Monitor by Zabbix agent active/edo.targets.total)=0 or (min(/EDO Monitor by Zabbix agent active/edo.targets.reporting,{$EDO.INTERVAL})>0 and (last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.MIN} or 100*last(/EDO Monitor by Zabbix agent active/edo.targets.broken)<{$EDO.MASS.PCT}*last(/EDO Monitor by Zabbix agent active/edo.targets.total)))'
+      tags:
+        - tag: scope
+          value: availability
+        - tag: service
+          value: Диадок

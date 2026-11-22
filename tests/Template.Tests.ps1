@@ -526,7 +526,7 @@ Describe 'Triggers' {
     It 'host summaries aggregate the class of this host only, with one wildcard per key parameter' {
         $paramCount = ($script:ProtoArgs.Trim('[', ']') -split ',').Count
         $calc = @($script:T.items | Where-Object { $_.type -eq 'CALCULATED' })
-        @($calc | ForEach-Object key | Sort-Object) | Should -Be @('edo.targets.broken', 'edo.targets.failing', 'edo.targets.reporting', 'edo.targets.total')
+        @($calc | ForEach-Object key | Sort-Object) | Should -Be @('edo.diadoc.failing', 'edo.diadoc.ok', 'edo.diadoc.targets', 'edo.targets.broken', 'edo.targets.failing', 'edo.targets.reporting', 'edo.targets.total')
         foreach ($i in $calc) {
             $refs = @([regex]::Matches($i.params, '_foreach\((/[^/]*/)edo\.class\[([^\]]*)\]'))
             $refs.Count | Should -BeGreaterThan 0 -Because $i.key
@@ -552,6 +552,43 @@ Describe 'Triggers' {
         # "проба не работает на хосте" exactly when it is needed.
         $total = @($script:T.items | Where-Object { $_.key -eq 'edo.targets.total' })[0]
         $total.params | Should -Be 'sum(exists_foreach(//edo.class[*,*,*,*]))'
+    }
+
+    It 'the Diadoc summaries select exactly the four Diadoc service tags' {
+        $targets = @($script:T.items | Where-Object { $_.key -eq 'edo.diadoc.targets' })[0]
+        $failing = @($script:T.items | Where-Object { $_.key -eq 'edo.diadoc.failing' })[0]
+        foreach ($i in @($targets, $failing)) {
+            $i.tags | Where-Object { $_.tag -eq 'component' } | ForEach-Object value | Should -Be 'summary'
+            $i.tags | Where-Object { $_.tag -eq 'service' } | ForEach-Object value | Should -Be 'Диадок'
+            foreach ($service in 'Диадок', 'Диадок API', 'Диадок EDI', 'Диадок EDI API') {
+                $i.params | Should -Match ([regex]::Escape(('tag="service:' + $service + '"'))) -Because $i.key
+            }
+            $i.params | Should -Match '//edo\.class\[\*,\*,\*,\*\]'
+        }
+        $failing.params | Should -Match '"ge",10'
+        $failing.params | Should -Match '"ge",90'
+        $failing.params | Should -Match '\{\$EDO\.MASS\.PERIOD\}'
+        $ok = @($script:T.items | Where-Object { $_.key -eq 'edo.diadoc.ok' })[0]
+        $ok.params | Should -Match '"eq",0'
+        $ok.params | Should -Match '\{\$EDO\.DIADOC\.RECOVERY\}'
+    }
+
+    It 'the Diadoc aggregate waits for four discovered targets and depends on the host outage' {
+        $t = Get-Trigger 'EDO: Диадок недоступен'
+        $t.expression | Should -Match 'last\(/[^)]*edo\.diadoc\.targets\)=\{\$EDO\.DIADOC\.TARGETS\}'
+        $t.expression | Should -Match 'min\(/[^)]*edo\.diadoc\.failing,\{\$EDO\.MASS\.PERIOD\}\)>0'
+        $t.expression | Should -Match 'not \(min\(/[^)]*edo\.targets\.failing,\{\$EDO\.MASS\.PERIOD\}\)>=\{\$EDO\.MASS\.MIN\}'
+        $t.recovery_mode | Should -Be 'RECOVERY_EXPRESSION'
+        $t.recovery_expression | Should -Match 'min\(/[^)]*edo\.diadoc\.ok,\{\$EDO\.DIADOC\.RECOVERY\}\)=\{\$EDO\.DIADOC\.TARGETS\}'
+        Assert-DependsOn $t @('EDO: массовый отказ с хоста', 'EDO: проба не работает на хосте')
+    }
+
+    It 'README documents the direct and proxy Kontur checks' {
+        $readme = [IO.File]::ReadAllText($script:ReadmePath)
+        $readme | Should -Match 'edo\.ps1.*-Group Kontur -Repeat 3'
+        $readme | Should -Match 'edo\.ps1.*-Group Kontur -ViaProxy -Repeat 3'
+        $readme | Should -Match 'смотрите последние данные Zabbix'
+        $readme | Should -Match 'Обе команды запускаются в интерактивной пользовательской сессии'
     }
 
     It 'host triggers refuse to fire on a host with fewer targets than the floor or none at all' {
@@ -611,9 +648,18 @@ Describe 'Interactive mode snapshot of template defaults' {
         $script:EdoThresholds.MassMin | Should -Be ([int](Get-MacroValue '{$EDO.MASS.MIN}'))
     }
 
-    It 'parses into 28 valid targets' {
+
+    It 'uses only current service endpoints for Kontur and CRPT' {
+        $kontur = Get-MacroValue '{$EDO.TARGETS.KONTUR}'
+        $crpt = Get-MacroValue '{$EDO.TARGETS.CRPT}'
+        $kontur | Should -Not -Match 'update\.kontur\.ru'
+        $crpt | Should -Not -Match 'suz\.crpt\.ru\|'
+        $crpt | Should -Match 'suzgrid\.crpt\.ru\|443\|/api/v3/'
+    }
+
+    It 'parses into 27 valid targets' {
         $all = @(Get-EdoDefaultTargets)
-        $all.Count | Should -Be 28
+        $all.Count | Should -Be 27
         foreach ($t in $all) { $t.Error | Should -BeNullOrEmpty -Because $t.Name }
         @($all | Where-Object { $_.Group -eq 'FNSGost' -and $_.Mode -eq 'gost' }).Count | Should -Be 2
     }

@@ -22,23 +22,24 @@
 
 | Макрос | Цели |
 |---|---|
-| `{$EDO.TARGETS.KONTUR}` | auth, api, identity, update, pki.skbkontur.ru, ca, diadoc, diadoc-api, edi, edi-api, extern, cdn.kontur.host, m4d — сверено с профилями diadoc, ke и m4d страницы `help.kontur.ru/check` |
+| `{$EDO.TARGETS.KONTUR}` | auth, api, identity, pki.skbkontur.ru, ca, diadoc, diadoc-api, edi, edi-api, extern, cdn.kontur.host, m4d — сверено с профилями diadoc, ke и m4d страницы `help.kontur.ru/check` |
 | `{$EDO.TARGETS.STALL}` | `help.kontur.ru/check/post` — тот же приёмник, что у страницы проверки Контура |
 | `{$EDO.TARGETS.GOSUSLUGI}` | www.gosuslugi.ru, esia.gosuslugi.ru |
 | `{$EDO.TARGETS.FNS}` | www.nalog.gov.ru, lkul.nalog.ru, lkip2.nalog.ru |
 | `{$EDO.TARGETS.FNS.GOST}` | lkulgost.nalog.ru, lkipgost.nalog.ru |
 | `{$EDO.TARGETS.TAXCOM}` | online.taxcom.ru, lk-new.taxcom.ru |
-| `{$EDO.TARGETS.CRPT}` | markirovka.crpt.ru, ismp.crpt.ru, suzgrid.crpt.ru, suz.crpt.ru, crpt.ru |
+| `{$EDO.TARGETS.CRPT}` | markirovka.crpt.ru, ismp.crpt.ru, suzgrid.crpt.ru (включая /api/v3/), crpt.ru |
 | `{$EDO.TARGETS.EXTRA}` | пусто — добавки офиса или хоста |
 
 ## На что реагирует
 
-На каждую цель обнаружение создаёт элемент «ответ пробы» (JSON), три зависимых элемента и шесть триггеров. На хост — четыре вычисляемых сводки по целям и три триггера.
+На каждую цель обнаружение создаёт элемент «ответ пробы» (JSON), три зависимых элемента и шесть триггеров. На хост — семь вычисляемых сводок по целям и четыре триггера.
 
 | Триггер | Серьёзность | Поднимается | Закрывается |
 |---|---|---|---|
 | `EDO: проба не работает на хосте` | Average, один на хост | ни одна цель не прислала класс за `{$EDO.NODATA.HOST}` или у `{$EDO.MASS.PCT}`% целей класс 90–91 | условие ушло |
 | `EDO: массовый отказ с хоста` | High, один на хост | последняя проверка с классом 10–50 у `{$EDO.MASS.PCT}`% целей (цели с классом 90–91 не в счёт), не меньше `{$EDO.MASS.MIN}` | условие ушло |
+| `EDO: Диадок недоступен` | Average, один на хост | все четыре цели Диадока обнаружены, хотя бы одна отказывает за `{$EDO.MASS.PERIOD}`, а массовый отказ хоста не подтверждён | все четыре цели успешны за `{$EDO.DIADOC.RECOVERY}` или цель исчезла из обнаружения |
 | `EDO: версия скрипта пробы не совпадает` | Average, один на хост | MD5 `edo.ps1` на хосте ≠ `{$EDO.SCRIPT.MD5}` | MD5 совпал |
 | `EDO <цель>: недоступен несколько проверок подряд` | Average | все проверки за `{$EDO.FAIL.PERIOD}` (по умолчанию `#3`) с классом 10–50 | **только успешными проверками подряд** за `{$EDO.RECOVERY.PERIOD}` (по умолчанию `#4`: через 45 минут после первой удачи) |
 | `EDO <цель>: нет данных пробы` | Average | нет класса дольше `{$EDO.NODATA}` | пришли данные |
@@ -135,7 +136,7 @@ Restart-Service 'Zabbix Agent 2'
 
 | Макрос | По умолчанию | Смысл |
 |---|---|---|
-| `{$EDO.TARGETS.KONTUR}` | 13 целей | цели Контура |
+| `{$EDO.TARGETS.KONTUR}` | 12 целей | цели Контура |
 | `{$EDO.TARGETS.STALL}` | help.kontur.ru | большой POST |
 | `{$EDO.TARGETS.GOSUSLUGI}` | 2 цели | Госуслуги |
 | `{$EDO.TARGETS.FNS}` | 3 цели | сайт и кабинеты ФНС |
@@ -149,8 +150,10 @@ Restart-Service 'Zabbix Agent 2'
 | `{$EDO.NODATA}` | 60m | окно без данных для Average «нет данных пробы»; больше `{$AGENT.NODATA_TIMEOUT}` (30m) и больше `{$EDO.NODATA.HOST}` хотя бы на интервал, чтобы первыми срабатывали триггеры агента и хоста |
 | `{$EDO.NODATA:"stall"}` | 3h | то же для большого POST |
 | `{$EDO.NODATA.HOST}` | 35m | окно, за которое ни одна цель хоста не прислала класс, для «проба не работает на хосте» |
-| `{$EDO.MASS.PCT}` | 50 | доля целей хоста, %, для «массовый отказ» (классы 10–50) и «проба не работает на хосте» (классы 90–91); отказ одного Контура (13 из 28) остаётся отказом по целям |
+| `{$EDO.MASS.PCT}` | 50 | доля целей хоста, %, для «массовый отказ» (классы 10–50) и «проба не работает на хосте» (классы 90–91); отказ одного Контура (12 из 27) остаётся отказом по целям |
 | `{$EDO.MASS.MIN}` | 3 | минимум целей для обоих хостовых триггеров |
+| `{$EDO.DIADOC.TARGETS}` | 4 | ожидаемое число целей агрегата Диадока: Диадок, API, EDI и EDI API |
+| `{$EDO.DIADOC.RECOVERY}` | 45m | временное окно успешных проверок всех четырёх целей для закрытия агрегата Диадока |
 | `{$EDO.MASS.PERIOD}` | 20m | сколько массовый отказ должен держаться до High: два плохих круга подряд |
 | `{$EDO.FAIL.PERIOD}` | #3 | период для Average «недоступен», Warning «медленно» и «нестабилен»: `#3` — последние три проверки |
 | `{$EDO.RECOVERY.PERIOD}` | #4 | сколько успешных проверок подряд закрывают «недоступен»: одиночный успех посреди перемежающегося отказа не закрывает проблему и не шлёт лишнюю пару PROBLEM/RESOLVED |
@@ -175,6 +178,20 @@ Restart-Service 'Zabbix Agent 2'
 & 'C:\Program Files\Zabbix Agent 2\scripts\edo.ps1' -Targets 'Офис 1С|http|1c.example.ru|443|/'
 ```
 
+Для инцидента с Диадоком сначала сравните прямой и пользовательский proxy-маршрут:
+
+```powershell
+& 'C:\Program Files\Zabbix Agent 2\scripts\edo.ps1' -Group Kontur -Repeat 3
+& 'C:\Program Files\Zabbix Agent 2\scripts\edo.ps1' -Group Kontur -ViaProxy -Repeat 3
+```
+
+Обе команды запускаются в интерактивной пользовательской сессии и не имитируют LocalSystem.
+Прямой отказ при успешном proxy означает, что пользовательский proxy доступен, а путь
+агента требует проверки маршрута, NAT или исходящего брандмауэра. Если обе команды проходят,
+смотрите последние данные Zabbix: его active-check работает от имени службы и может видеть
+другой маршрут или правила брандмауэра. Если оба режима отказывают, сравните DNS, TCP и TLS
+с другого хоста и проверьте шлюз.
+
 | Ключ | Что делает |
 |---|---|
 | `-Group a,b` | только эти группы целей шаблона |
@@ -197,7 +214,7 @@ Restart-Service 'Zabbix Agent 2'
   OK   ЛК ЮЛ ГОСТ             lkulgost.nalog.ru:443            213.24.64.177      237 мс  сервер принял ГОСТ TLS (csptest)
   OK   ЛК ИП ГОСТ             lkipgost.nalog.ru:443            213.24.64.177      241 мс  сервер принял ГОСТ TLS (csptest)
 ...
-Итог (проверок: 28, 11 с): 27 OK, 1 FAIL
+Итог (проверок: 27, 11 с): 26 OK, 1 FAIL
 
 Что делать:
   [23 TCP_FAIL] TCP: ошибка сети: www.nalog.gov.ru (212.193.155.42:443)

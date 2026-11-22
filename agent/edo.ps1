@@ -384,13 +384,13 @@ function ConvertTo-EdoJson {
 # Snapshot of the template's default {$EDO.TARGETS.*}, pinned to it by tests/Template.Tests.ps1. Overrides of
 # these macros on a host or group in Zabbix are not visible here: pass the effective value with -Targets.
 $script:EdoTargets = [ordered]@{
-    Kontur    = 'Контур Auth|http|auth.kontur.ru|443|/_status/ping;Контур API|http|api.kontur.ru|443|/robots.txt;Контур Identity|http|identity.kontur.ru|443|/;Контур Update|http|update.kontur.ru|443|/_status/ping;УЦ Контур|http|pki.skbkontur.ru|80|/ping;УЦ Контур ЛК|http|ca.kontur.ru|443|/robots.txt;Диадок|http|diadoc.kontur.ru|443|/_status/ping;Диадок API|http|diadoc-api.kontur.ru|443|/_status/ping;Диадок EDI|http|edi.kontur.ru|443|/_status/ping;Диадок EDI API|http|edi-api.kontur.ru|443|/_status/ping;Экстерн|http|extern.kontur.ru|443|/;Экстерн CDN|http|cdn.kontur.host|443|/environments/Prod/bundles/connection-check/files/;Контур МЧД|http|m4d.kontur.ru|443|/'
+    Kontur    = 'Контур Auth|http|auth.kontur.ru|443|/_status/ping;Контур API|http|api.kontur.ru|443|/robots.txt;Контур Identity|http|identity.kontur.ru|443|/;УЦ Контур|http|pki.skbkontur.ru|80|/ping;УЦ Контур ЛК|http|ca.kontur.ru|443|/robots.txt;Диадок|http|diadoc.kontur.ru|443|/_status/ping;Диадок API|http|diadoc-api.kontur.ru|443|/_status/ping;Диадок EDI|http|edi.kontur.ru|443|/_status/ping;Диадок EDI API|http|edi-api.kontur.ru|443|/_status/ping;Экстерн|http|extern.kontur.ru|443|/;Экстерн CDN|http|cdn.kontur.host|443|/environments/Prod/bundles/connection-check/files/;Контур МЧД|http|m4d.kontur.ru|443|/'
     Stall     = 'Контур большой POST|stall|help.kontur.ru|443|/check/post'
     Gosuslugi = 'Госуслуги|http|www.gosuslugi.ru|443|/;ЕСИА|http|esia.gosuslugi.ru|443|/'
     FNS       = 'ФНС|http|www.nalog.gov.ru|443|/;ЛК ЮЛ|http|lkul.nalog.ru|443|/;ЛК ИП|http|lkip2.nalog.ru|443|/'
     FNSGost   = 'ЛК ЮЛ ГОСТ|gost|lkulgost.nalog.ru|443|/;ЛК ИП ГОСТ|gost|lkipgost.nalog.ru|443|/'
     Taxcom    = 'Такском|http|online.taxcom.ru|443|/;Такском ЛК|http|lk-new.taxcom.ru|443|/'
-    CRPT      = 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак СУЗ API|http|suz.crpt.ru|443|/;Честный знак сайт|http|crpt.ru|443|/'
+    CRPT      = 'Честный знак ЛК|http|markirovka.crpt.ru|443|/;Честный знак ИС МП|http|ismp.crpt.ru|443|/;Честный знак СУЗ|http|suzgrid.crpt.ru|443|/;Честный знак СУЗ API|http|suzgrid.crpt.ru|443|/api/v3/;Честный знак сайт|http|crpt.ru|443|/'
 }
 $script:EdoGroupTitles = @{
     Kontur = 'Контур'; Stall = 'Контур: большая отправка'; Gosuslugi = 'Госуслуги'; FNS = 'ФНС'
